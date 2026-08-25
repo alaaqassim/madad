@@ -1,0 +1,113 @@
+/*
+| Madad design tokens
+|
+| Reconstructed from the two production Madad screenshots (registration form +
+| competition hero). Values are visually faithful approximations, not sampled
+| brand hex codes; they are gathered here so the exam screens and the existing
+| marketing screens can be reconciled by editing one file.
+*/
+
+:root {
+    /* ── Green: brand ink, hero surfaces, focus ─────────────────────────── */
+    --madad-green-900: #0c3f36; /* brand wordmark, H1 on cream */
+    --madad-green-800: #0f4a40; /* labels, strong ink */
+    --madad-green-700: #14544a; /* hero band, primary surface */
+    --madad-green-600: #1c6558;
+    --madad-green-300: #8fb2a8;
+    --madad-green-100: #e7eee7; /* header bar tint */
+    --madad-green-050: #f1f6f0;
+
+    /* ── Gold: the single accent. CTA fill and section labels ───────────── */
+    --madad-gold-700: #8f6f26;
+    --madad-gold-600: #b08d3e; /* eyebrow + section heading text */
+    --madad-gold-500: #c9a24d; /* primary CTA fill */
+    --madad-gold-400: #d8b76b; /* CTA hover */
+    --madad-gold-200: #ecd9a8;
+    --madad-gold-100: #f4e9d0;
+    --madad-gold-050: #fbf5e7;
+
+    /* ── Cream / surface ────────────────────────────────────────────────── */
+    --madad-cream: #f8f3ea; /* page background */
+    --madad-cream-deep: #f1e9db; /* inset wells, track fills */
+    --madad-surface: #ffffff; /* cards, inputs */
+
+    /* ── Ink ────────────────────────────────────────────────────────────── */
+    --madad-ink: #17322c; /* body copy on cream */
+    --madad-ink-muted: #7c8b85; /* supporting copy */
+    --madad-ink-faint: #a6ada6; /* placeholders */
+    --madad-on-green: #ffffff;
+    --madad-on-green-muted: rgba(255, 255, 255, 0.82);
+    --madad-on-gold: #3c2f0d; /* CTA label — dark, never white */
+
+    /* ── Lines and disabled ─────────────────────────────────────────────── */
+    --madad-border: #e0d8c9;
+    --madad-border-strong: #cfc4af;
+    --madad-border-green: #dbe3da; /* header hairline */
+    --madad-disabled-surface: #f2eee6;
+    --madad-disabled-ink: #a9a79e;
+    --madad-disabled-border: #e6e0d4;
+
+    /* ── Feedback. Kept inside the warm palette on purpose: Madad has no
+       |  saturated alert colours anywhere in the source UI. ──────────────── */
+    --madad-danger: #a3392f;
+    --madad-danger-ink: #7d2b23;
+    --madad-danger-surface: #fbeeec;
+    --madad-danger-border: #eccfca;
+    --madad-success: #2e6e4e;
+    --madad-success-surface: #eaf3ec;
+    --madad-success-border: #cbe0d1;
+    --madad-warning: #a8712a; /* timer, late window */
+    --madad-warning-surface: #fbf0dd;
+    --madad-warning-border: #ecd9b4;
+
+    /* ── Type ───────────────────────────────────────────────────────────── */
+    --madad-font-display: 'Noto Naskh Arabic', 'Amiri', 'Times New Roman', serif;
+    --madad-font-ui: 'IBM Plex Sans Arabic', 'Noto Sans Arabic', 'Segoe UI', Tahoma, sans-serif;
+    --madad-font-numeric: 'IBM Plex Sans Arabic', 'Segoe UI', Tahoma, sans-serif;
+
+    --madad-text-eyebrow: 0.8125rem; /* 13px */
+    --madad-text-sm: 0.875rem; /* 14px */
+    --madad-text-base: 1rem;
+    --madad-text-lg: 1.0625rem; /* 17px body / option text */
+    --madad-text-xl: 1.25rem;
+    --madad-text-h2: clamp(1.375rem, 4.4vw, 1.75rem);
+    --madad-text-h1: clamp(1.75rem, 6.4vw, 2.25rem);
+    --madad-text-timer: clamp(1.5rem, 5.6vw, 1.875rem);
+
+    --madad-leading-tight: 1.45;
+    --madad-leading-body: 1.9; /* the generous Arabic rhythm of the source UI */
+    --madad-tracking-eyebrow: 0.18em;
+
+    /* ── Shape ──────────────────────────────────────────────────────────── */
+    --madad-radius-sm: 10px;
+    --madad-radius-md: 14px; /* inputs, buttons, option rows */
+    --madad-radius-lg: 24px; /* cards */
+    --madad-radius-pill: 999px;
+
+    /* ── Elevation. One soft green-tinted shadow, reused. ────────────────── */
+    --madad-shadow-card: 0 18px 40px -26px rgba(12, 63, 54, 0.35), 0 2px 6px rgba(12, 63, 54, 0.04);
+    --madad-shadow-cta: 0 12px 24px -14px rgba(143, 111, 38, 0.55);
+    --madad-shadow-raised: 0 24px 56px -30px rgba(12, 63, 54, 0.4);
+
+    /* ── Space ──────────────────────────────────────────────────────────── */
+    --madad-space-1: 0.25rem;
+    --madad-space-2: 0.5rem;
+    --madad-space-3: 0.75rem;
+    --madad-space-4: 1rem;
+    --madad-space-5: 1.25rem; /* field gap */
+    --madad-space-6: 1.5rem; /* card padding (mobile) */
+    --madad-space-8: 2rem; /* section gap */
+    --madad-space-10: 2.5rem;
+    --madad-space-14: 3.5rem;
+    --madad-space-18: 4.5rem;
+
+    /* ── Metrics lifted from the screenshots ────────────────────────────── */
+    --madad-control-height: 3.5rem; /* 56px inputs / gender pills */
+    --madad-cta-height: 3.75rem; /* 60px gold pill */
+    --madad-header-height: 4.5rem;
+    --madad-tap-min: 2.75rem; /* 44px floor for every interactive target */
+
+    /* ── Containers. Reading width stays narrow on desktop. ─────────────── */
+    --madad-container-reading: 36rem; /* 576px — form + question card */
+    --madad-container-wide: 70rem; /* header rail */
+}

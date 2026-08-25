@@ -1,9 +1,9 @@
 import './bootstrap';
 import { createApp } from 'vue';
-import BootstrapCheck from './components/BootstrapCheck.vue';
+import MadadApp from './MadadApp.vue';
 
 const el = document.getElementById('app');
 
 if (el) {
-    createApp(BootstrapCheck).mount(el);
+    createApp(MadadApp).mount(el);
 }

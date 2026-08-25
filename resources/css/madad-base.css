@@ -1,0 +1,212 @@
+/*
+| Madad base layer
+|
+| Element defaults and the handful of layout primitives every contestant screen
+| shares. Everything visual is expressed through the tokens in
+| madad-tokens.css — no colour or radius literals below this comment.
+*/
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html {
+    -webkit-text-size-adjust: 100%;
+}
+
+body {
+    margin: 0;
+    background: var(--madad-cream);
+    color: var(--madad-ink);
+    font-family: var(--madad-font-ui);
+    font-size: var(--madad-text-base);
+    line-height: var(--madad-leading-body);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3 {
+    margin: 0;
+    font-family: var(--madad-font-display);
+    color: var(--madad-green-900);
+    line-height: var(--madad-leading-tight);
+    font-weight: 700;
+}
+
+p {
+    margin: 0;
+}
+
+button {
+    font: inherit;
+    color: inherit;
+}
+
+input,
+select,
+textarea {
+    font: inherit;
+}
+
+/*
+| Focus. Visible on every control, in the brand green rather than the UA blue,
+| and never removed — the exam is keyboard-operable end to end.
+*/
+:focus-visible {
+    outline: 3px solid var(--madad-green-600);
+    outline-offset: 2px;
+    border-radius: var(--madad-radius-sm);
+}
+
+.madad-visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* ── Layout primitives ──────────────────────────────────────────────────── */
+
+.madad-page {
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    background: var(--madad-cream);
+}
+
+.madad-main {
+    flex: 1 1 auto;
+    width: 100%;
+    padding: var(--madad-space-8) var(--madad-space-4) var(--madad-space-14);
+}
+
+/* Reading width is capped so a question card never stretches across a desktop. */
+.madad-reading {
+    width: 100%;
+    max-width: var(--madad-container-reading);
+    margin-inline: auto;
+}
+
+/* ── The eyebrow: gold, letterspaced, flanked by rules (registration shot) ── */
+
+.madad-eyebrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--madad-space-4);
+    color: var(--madad-gold-600);
+    font-size: var(--madad-text-eyebrow);
+    font-weight: 600;
+    letter-spacing: var(--madad-tracking-eyebrow);
+}
+
+/* Short flanking rules, as in the source UI — not a full-width divider. */
+.madad-eyebrow::before,
+.madad-eyebrow::after {
+    content: '';
+    flex: 0 0 auto;
+    inline-size: 2.5rem;
+    block-size: 1px;
+    background: var(--madad-gold-200);
+}
+
+/* ── Section heading inside a card: gold label, rule filling the remainder ── */
+
+.madad-section-heading {
+    display: flex;
+    align-items: center;
+    gap: var(--madad-space-4);
+    margin: 0 0 var(--madad-space-6);
+    color: var(--madad-gold-600);
+    font-family: var(--madad-font-ui);
+    font-size: var(--madad-text-sm);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.madad-section-heading::after {
+    content: '';
+    flex: 1 1 0;
+    height: 1px;
+    background: var(--madad-border);
+}
+
+/* ── Page intro block: eyebrow, H1, muted subtitle ──────────────────────── */
+
+.madad-intro {
+    text-align: center;
+    margin-bottom: var(--madad-space-8);
+}
+
+.madad-intro__title {
+    margin-top: var(--madad-space-5);
+    font-size: var(--madad-text-h1);
+}
+
+.madad-intro__subtitle {
+    margin-top: var(--madad-space-4);
+    color: var(--madad-ink-muted);
+    font-size: var(--madad-text-lg);
+}
+
+@media (min-width: 48rem) {
+    .madad-main {
+        padding-block: var(--madad-space-14) var(--madad-space-18);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+    }
+}
+
+/*
+| Skip link. Hidden until focused, then lands as a gold pill at the top of the
+| page — the first tab stop into the exam.
+*/
+.madad-skip-link {
+    position: absolute;
+    inset-inline-start: var(--madad-space-4);
+    inset-block-start: -100%;
+    z-index: 50;
+    padding: var(--madad-space-3) var(--madad-space-6);
+    background: var(--madad-gold-500);
+    color: var(--madad-on-gold);
+    border-radius: var(--madad-radius-pill);
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.madad-skip-link:focus {
+    inset-block-start: var(--madad-space-4);
+}
+
+/*
+| Quiet controls sitting on a green card.
+|
+| The link button's default green ink disappears against --madad-green-700, so
+| on that surface it lifts to gold. Specificity is deliberately one class higher
+| than the component's own scoped rule, which it must beat.
+*/
+.madad-card--green .madad-btn.madad-btn--link {
+    color: var(--madad-gold-400);
+}
+
+.madad-card--green .madad-btn.madad-btn--link:hover:not(:disabled) {
+    color: var(--madad-gold-200);
+}
