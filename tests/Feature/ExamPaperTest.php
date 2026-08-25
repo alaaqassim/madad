@@ -6,6 +6,7 @@ use App\Exceptions\ExamException;
 use App\Models\Competition;
 use App\Models\CompetitionUser;
 use App\Models\CompetitionUserQuestion;
+use App\Models\User;
 use App\Services\Competition\CompetitionExamService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -172,7 +173,7 @@ class ExamPaperTest extends TestCase
         $competition = $this->makeCompetition(['question_count' => 5]);
         $this->makeQuestions($competition, 5);
 
-        $outsider = \App\Models\User::query()->create([
+        $outsider = User::query()->create([
             'name' => 'غريب',
             'email' => 'outsider@madad.test',
             'password' => 'irrelevant',

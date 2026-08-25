@@ -33,15 +33,31 @@ class ExamController extends Controller
         $competition = $this->activeCompetition();
 
         if ($competition === null) {
-            return response()->json(['open' => false, 'reason' => 'no_competition']);
+            return response()->json([
+                'competition' => null,
+                'status' => null,
+                'open' => false,
+                'reason' => 'no_competition',
+                'server_time' => now()->toIso8601String(),
+            ]);
         }
+
+        $open = $this->gate->mayParticipate($competition);
 
         $payload = [
             'competition' => $competition->name,
             'status' => $competition->status,
-            'open' => $this->gate->mayParticipate($competition),
+            'open' => $open,
+            // Same vocabulary the error contract uses, so the client has one
+            // set of codes to branch on whether it asked or was refused.
+            'reason' => match (true) {
+                $open => null,
+                $competition->isClosed() => 'competition_closed',
+                default => 'competition_not_open',
+            },
             'total_questions' => $competition->question_count,
             'seconds_per_question' => $competition->seconds_per_question,
+            'show_result' => $competition->show_result,
             'server_time' => now()->toIso8601String(),
         ];
 
@@ -64,20 +80,26 @@ class ExamController extends Controller
         $competition = $this->requireCompetition();
         $participation = $this->exam->startOrResume($request->user(), $competition);
 
+        $question = $this->exam->currentQuestion($participation);
+
         return response()->json([
-            'exam_status' => $participation->exam_status,
+            'exam_status' => $participation->fresh()->exam_status,
             'started_at' => $participation->started_at?->toIso8601String(),
-            'question' => $this->exam->currentQuestion($participation),
+            'question' => $question,
         ]);
     }
 
     public function currentQuestion(Request $request): JsonResponse
     {
         $participation = $this->requireParticipation($request);
+        $question = $this->exam->currentQuestion($participation);
 
+        // Same envelope as /exam/start, so the client renders one shape whether
+        // it just started, resumed, or merely refreshed.
         return response()->json([
-            'exam_status' => $participation->exam_status,
-            'question' => $this->exam->currentQuestion($participation),
+            'exam_status' => $participation->fresh()->exam_status,
+            'started_at' => $participation->started_at?->toIso8601String(),
+            'question' => $question,
         ]);
     }
 

@@ -13,6 +13,24 @@ use RuntimeException;
  */
 class ExamException extends RuntimeException
 {
+    /**
+     * Every code this class can emit. The contract the Vue client branches on;
+     * documented in docs/API_CONTRACT.md and asserted in ErrorContractTest.
+     *
+     * @var list<string>
+     */
+    public const REASONS = [
+        'competition_not_open',
+        'competition_closed',
+        'not_a_contestant',
+        'account_not_provisioned',
+        'exam_completed',
+        'no_current_question',
+        'question_not_available',
+        'question_expired',
+        'paper_not_ready',
+    ];
+
     public function __construct(
         string $message,
         public readonly string $reason,
@@ -24,6 +42,18 @@ class ExamException extends RuntimeException
     public static function competitionNotOpen(): self
     {
         return new self('The competition is not open.', 'competition_not_open', 403);
+    }
+
+    /**
+     * Distinct from competition_not_open on purpose.
+     *
+     * `closed` is terminal — the competition has ENDED — so the contestant is
+     * not waiting for anything and the client must not offer a retry. A portal
+     * that is merely `draft`/`ready` may still open later; this one will not.
+     */
+    public static function competitionClosed(): self
+    {
+        return new self('The competition has ended.', 'competition_closed', 403);
     }
 
     public static function notAContestant(): self

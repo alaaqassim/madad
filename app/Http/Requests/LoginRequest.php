@@ -2,12 +2,13 @@
 
 namespace App\Http\Requests;
 
+use App\Exceptions\InvalidCredentialsException;
+use App\Exceptions\TooManyAttemptsException;
 use Illuminate\Auth\Events\Lockout;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
-use Illuminate\Validation\ValidationException;
 
 class LoginRequest extends FormRequest
 {
@@ -37,8 +38,10 @@ class LoginRequest extends FormRequest
             RateLimiter::hit($this->throttleKey());
 
             // One message for wrong password and unknown address alike, so the
-            // endpoint cannot be used to enumerate who is registered.
-            throw ValidationException::withMessages([
+            // endpoint cannot be used to enumerate who is registered. The typed
+            // subclass only adds the machine-readable code; the body is the
+            // same {message, errors} shape Laravel always returned.
+            throw InvalidCredentialsException::withMessages([
                 'email' => __('auth.failed'),
             ]);
         }
@@ -56,7 +59,7 @@ class LoginRequest extends FormRequest
 
         $seconds = RateLimiter::availableIn($this->throttleKey());
 
-        throw ValidationException::withMessages([
+        throw TooManyAttemptsException::withMessages([
             'email' => __('auth.throttle', [
                 'seconds' => $seconds,
                 'minutes' => ceil($seconds / 60),

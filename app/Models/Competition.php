@@ -12,12 +12,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * and `ends_at` are display metadata and must never gate access — two
  * authorities would mean two readings of the same question.
  *
- * @property int    $id
+ * @property int $id
  * @property string $name
  * @property string $status
- * @property bool   $show_result
- * @property int    $question_count
- * @property int    $seconds_per_question
+ * @property bool $show_result
+ * @property int $question_count
+ * @property int $seconds_per_question
  */
 class Competition extends Model
 {
@@ -73,5 +73,15 @@ class Competition extends Model
     public function isOpen(): bool
     {
         return $this->status === self::STATUS_OPEN;
+    }
+
+    /**
+     * Terminal. `closed` means the competition has ENDED — not merely that new
+     * starts are blocked — so an in-progress contestant may not resume, fetch
+     * another question, or submit another answer.
+     */
+    public function isClosed(): bool
+    {
+        return $this->status === self::STATUS_CLOSED;
     }
 }

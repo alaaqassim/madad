@@ -28,11 +28,20 @@ class CompetitionGate
         return $competition->isOpen();
     }
 
+    /**
+     * Refuses with the code that tells the client what it may do next:
+     * `competition_closed` is terminal, `competition_not_open` may still change.
+     * The refusal itself is identical either way.
+     */
     public function assertMayParticipate(Competition $competition): void
     {
-        if (! $this->mayParticipate($competition)) {
-            throw ExamException::competitionNotOpen();
+        if ($this->mayParticipate($competition)) {
+            return;
         }
+
+        throw $competition->isClosed()
+            ? ExamException::competitionClosed()
+            : ExamException::competitionNotOpen();
     }
 
     public function open(Competition $competition): void

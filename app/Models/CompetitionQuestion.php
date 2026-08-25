@@ -13,9 +13,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * serialise it to a contestant. Grading reads it explicitly; nothing else
  * should.
  *
- * @property int    $id
- * @property int    $competition_id
- * @property int    $question_number
+ * @property int $id
+ * @property int $competition_id
+ * @property int $question_number
  * @property string $question_text
  * @property string $correct_option
  */

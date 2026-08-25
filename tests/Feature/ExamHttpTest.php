@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Competition;
 use App\Models\CompetitionQuestion;
 use App\Models\CompetitionUserQuestion;
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Tests\Support\MadadFixtures;
@@ -104,9 +105,11 @@ class ExamHttpTest extends TestCase
         $this->makeQuestions($competition, 5);
         $participation = $this->makeContestant($competition);
 
+        // `closed` is terminal, so it reports its own code rather than the
+        // generic one a draft/ready portal uses — see CompetitionClosureTest.
         $this->actingAs($participation->user)->postJson('/api/exam/start')
             ->assertStatus(403)
-            ->assertJsonPath('reason', 'competition_not_open');
+            ->assertJsonPath('reason', 'competition_closed');
     }
 
     public function test_the_answer_endpoint_rejects_an_option_outside_a_to_d(): void
@@ -154,7 +157,7 @@ class ExamHttpTest extends TestCase
     {
         $this->makeCompetition(['question_count' => 5]);
 
-        $outsider = \App\Models\User::query()->create([
+        $outsider = User::query()->create([
             'name' => 'غريب',
             'email' => 'outsider@madad.test',
             'password' => 'irrelevant',

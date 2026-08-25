@@ -16,13 +16,13 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  *
  * No plaintext credential is ever stored here. The hash lives on users.password.
  *
- * @property int         $id
- * @property int|null    $user_id
- * @property string      $account_status
- * @property string      $email_status
- * @property string      $exam_status
- * @property int         $correct_answers
- * @property int         $answered_questions
+ * @property int $id
+ * @property int|null $user_id
+ * @property string $account_status
+ * @property string $email_status
+ * @property string $exam_status
+ * @property int $correct_answers
+ * @property int $answered_questions
  */
 class CompetitionUser extends Model
 {

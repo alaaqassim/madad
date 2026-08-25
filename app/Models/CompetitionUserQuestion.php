@@ -13,13 +13,13 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * extended. A refresh re-serves the same row with the original deadline, so
  * reloading the page cannot buy time.
  *
- * @property int         $id
- * @property int         $competition_user_id
- * @property int         $competition_question_id
- * @property int         $sequence
+ * @property int $id
+ * @property int $competition_user_id
+ * @property int $competition_question_id
+ * @property int $sequence
  * @property string|null $selected_option
- * @property bool        $is_correct
- * @property bool        $timed_out
+ * @property bool $is_correct
+ * @property bool $timed_out
  */
 class CompetitionUserQuestion extends Model
 {

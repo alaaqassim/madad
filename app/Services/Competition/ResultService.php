@@ -42,13 +42,40 @@ class ResultService
     }
 
     /**
+     * One export row.
+     *
+     * No password, no hash, no answer key, no per-question detail — an export
+     * that carried any of those would be a leak the moment it left the server.
+     * `total_questions` comes from the competition, not from a count of the
+     * contestant's rows, so a short paper would show up as a discrepancy rather
+     * than be silently normalised away.
+     *
+     * @return array<string, mixed>
+     */
+    public function row(CompetitionUser $participation, Competition $competition): array
+    {
+        return [
+            'competition_user_id' => $participation->id,
+            'name' => $participation->contestant_name,
+            'email' => $participation->contestant_email,
+            'correct_answers' => $participation->correct_answers,
+            'total_questions' => $competition->question_count,
+            'answered_questions' => $participation->answered_questions,
+            'started_at' => $participation->started_at?->toIso8601String(),
+            'completed_at' => $participation->completed_at?->toIso8601String(),
+        ];
+    }
+
+    /**
      * Export-ready Top N.
      *
      * @return array<string, mixed>
      */
     public function topN(Competition $competition, int $limit = 100): array
     {
-        $rows = $this->completed($competition, $limit);
+        // 0 (or less) means "every completed contestant" — the operator asking
+        // for the whole field rather than a leaderboard.
+        $rows = $this->completed($competition, $limit > 0 ? $limit : null);
         $cutoffScore = $rows->last()?->correct_answers;
 
         $tiedAtCutoff = $cutoffScore === null ? 0 : CompetitionUser::query()
@@ -74,15 +101,7 @@ class ResultService
             // left, the boundary is genuinely undecided.
             'cutoff_is_contested' => $cutoffScore !== null && $tiedAtCutoff > $withinCutoff,
             'contestants_tied_at_cutoff' => $tiedAtCutoff,
-            'rows' => $rows->map(fn (CompetitionUser $p) => [
-                'competition_user_id' => $p->id,
-                'name' => $p->contestant_name,
-                'email' => $p->contestant_email,
-                'correct_answers' => $p->correct_answers,
-                'answered_questions' => $p->answered_questions,
-                'started_at' => $p->started_at?->toIso8601String(),
-                'completed_at' => $p->completed_at?->toIso8601String(),
-            ])->all(),
+            'rows' => $rows->map(fn (CompetitionUser $p) => $this->row($p, $competition))->all(),
         ];
     }
 }

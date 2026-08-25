@@ -102,21 +102,31 @@ class AnswerSubmissionTest extends TestCase
 
     public function test_a_contestant_cannot_answer_a_question_from_another_contestants_paper(): void
     {
-        [$competition, $mine, $service] = $this->startedContestant();
-
+        // A bank of 12 for papers of 5, so the two papers are genuinely
+        // different subsets and a question always exists on theirs but not on
+        // mine. Nothing here depends on how the shuffle happened to fall.
+        $competition = $this->makeCompetition(['question_count' => 5]);
+        $this->makeQuestions($competition, 12);
+        $mine = $this->makeContestant($competition);
         $theirs = $this->makeContestant($competition);
+        $service = app(CompetitionExamService::class);
+
+        $service->startOrResume($mine->user, $competition);
         $service->startOrResume($theirs->user, $competition);
-        $theirQuestion = $service->currentQuestion($theirs->fresh());
+        $service->currentQuestion($mine->fresh());
 
-        // Only reachable if their question differs from mine at sequence 1.
-        $myQuestion = $service->currentQuestion($mine->fresh());
+        $myPaper = CompetitionUserQuestion::query()
+            ->where('competition_user_id', $mine->id)->pluck('competition_question_id')->all();
 
-        if ($theirQuestion['question_id'] === $myQuestion['question_id']) {
-            $this->markTestSkipped('both papers opened with the same question this run');
-        }
+        $onlyTheirs = CompetitionUserQuestion::query()
+            ->where('competition_user_id', $theirs->id)
+            ->whereNotIn('competition_question_id', $myPaper)
+            ->value('competition_question_id');
+
+        $this->assertNotNull($onlyTheirs, 'the two papers must differ for this test to mean anything');
 
         try {
-            $service->submitAnswer($mine->fresh(), $theirQuestion['question_id'], 'A');
+            $service->submitAnswer($mine->fresh(), $onlyTheirs, 'A');
             $this->fail('answering another paper must be refused');
         } catch (ExamException $e) {
             // Identical message whether the question belongs to someone else or
