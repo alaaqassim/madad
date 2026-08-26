@@ -23,17 +23,24 @@ const exam = useCompetitionExam();
 
 onMounted(async () => {
     /*
-     * The mock journey, in the two places it belongs: the dev server, and the
-     * static demo built by vite.demo.config.js for review from a link.
+     * The real backend is the default everywhere, including on the dev server.
+     * The mock is reachable in exactly two ways, both of them deliberate:
+     *
+     *   * the static demo built by vite.demo.config.js, which is the only
+     *     thing that defines VITE_MADAD_DEMO;
+     *   * ?mock=1 on a dev server, for visual work without a database.
      *
      * Both operands fold to a literal false in the Laravel production build —
-     * DEV is false, and VITE_MADAD_DEMO is defined only by the demo config —
-     * so this branch and the chunk it would import are eliminated. The shipped
-     * app contains no mock adapter, no credentials, no question text and no
-     * developer controls. It installs before boot() so the very first
-     * /competition/status call is already answered by the mock.
+     * DEV is false there, and VITE_MADAD_DEMO is undefined — so this branch and
+     * the chunk it would import are eliminated. The shipped app contains no
+     * mock adapter, no credentials, no question text, and no way for a URL to
+     * talk it into one.
      */
-    if (import.meta.env.DEV || import.meta.env.VITE_MADAD_DEMO === 'true') {
+    const mockRequested =
+        import.meta.env.VITE_MADAD_DEMO === 'true' ||
+        (import.meta.env.DEV && new URLSearchParams(window.location.search).get('mock') === '1');
+
+    if (mockRequested) {
         const { installMockJourney } = await import('./dev/installMockJourney');
 
         installMockJourney();
