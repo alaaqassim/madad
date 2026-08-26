@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Gate;
@@ -92,7 +93,7 @@ class SessionSecurityTest extends TestCase
     public function test_an_authenticated_contestant_only_ever_reaches_their_own_participation(): void
     {
         $mine = $this->contestant();
-        $competition = $mine->competition;
+        $competition = CompetitionSettings::current();
         $theirs = $this->makeContestant($competition);
 
         $this->actingAs($theirs->user)->postJson('/api/exam/start')->assertOk();
@@ -119,7 +120,7 @@ class SessionSecurityTest extends TestCase
     public function test_the_ownership_policy_refuses_another_contestants_row(): void
     {
         $mine = $this->contestant();
-        $theirs = $this->makeContestant($mine->competition);
+        $theirs = $this->makeContestant(CompetitionSettings::current());
 
         // The exam flow never accepts a participation id, so this policy is not
         // what keeps it safe — but it is the explicit statement of the rule for

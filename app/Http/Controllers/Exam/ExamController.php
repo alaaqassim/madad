@@ -5,7 +5,7 @@ namespace App\Http\Controllers\Exam;
 use App\Exceptions\ExamException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\SubmitAnswerRequest;
-use App\Models\Competition;
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use App\Services\Competition\CompetitionExamService;
 use App\Services\Competition\CompetitionGate;
@@ -15,10 +15,11 @@ use Illuminate\Http\Request;
 /**
  * Thin by design: every decision lives in CompetitionExamService.
  *
- * Note what is absent from every signature — there is no competition_user id,
- * no sequence, and no participation parameter. The contestant's row is always
- * resolved FROM the authenticated user, so there is no identifier an attacker
- * could substitute to reach another paper.
+ * Note what is absent from every signature — there is no competition id, no
+ * competition_user id, no sequence, and no participation parameter. There is one
+ * competition, and the contestant's row is always resolved FROM the
+ * authenticated user, so there is no identifier an attacker could substitute to
+ * reach another paper.
  */
 class ExamController extends Controller
 {
@@ -30,9 +31,9 @@ class ExamController extends Controller
     /** Public: what the portal will let you do right now. */
     public function status(Request $request): JsonResponse
     {
-        $competition = $this->activeCompetition();
+        $settings = CompetitionSettings::current();
 
-        if ($competition === null) {
+        if ($settings === null) {
             return response()->json([
                 'competition' => null,
                 'status' => null,
@@ -42,29 +43,34 @@ class ExamController extends Controller
             ]);
         }
 
-        $open = $this->gate->mayParticipate($competition);
-
         $payload = [
-            'competition' => $competition->name,
-            'status' => $competition->status,
-            'open' => $open,
+            'competition' => $settings->name,
+            'status' => $settings->status,
+            'open' => $this->gate->mayParticipate($settings),
             // Same vocabulary the error contract uses, so the client has one
             // set of codes to branch on whether it asked or was refused.
-            'reason' => match (true) {
-                $open => null,
-                $competition->isClosed() => 'competition_closed',
-                default => 'competition_not_open',
-            },
-            'total_questions' => $competition->question_count,
-            'seconds_per_question' => $competition->seconds_per_question,
-            'show_result' => $competition->show_result,
+            'reason' => $this->gate->reason($settings),
+            'total_questions' => $settings->questionCount(),
+            'seconds_per_question' => $settings->secondsPerQuestion(),
+            'show_result' => $settings->show_result,
+
+            // The availability window, and the personal allowance inside it.
+            'starts_at' => $settings->starts_at?->toIso8601String(),
+            'ends_at' => $settings->ends_at?->toIso8601String(),
+            'exam_duration_minutes' => $settings->exam_duration_minutes,
+
+            // What a contestant beginning NOW would actually get. A late starter
+            // has to be told they are getting the remainder of the window rather
+            // than a full allowance — before they press Begin, not after.
+            'seconds_available' => $settings->secondsAvailableFrom(),
+
             'server_time' => now()->toIso8601String(),
         ];
 
         $user = $request->user();
 
         if ($user !== null) {
-            $participation = $this->exam->participationFor($user, $competition);
+            $participation = $this->exam->participationFor($user);
 
             $payload['participation'] = $participation === null ? null : [
                 'exam_status' => $participation->exam_status,
@@ -77,96 +83,76 @@ class ExamController extends Controller
 
     public function start(Request $request): JsonResponse
     {
-        $competition = $this->requireCompetition();
-        $participation = $this->exam->startOrResume($request->user(), $competition);
+        $settings = $this->requireSettings();
+        $participation = $this->exam->startOrResume($request->user(), $settings);
 
-        $question = $this->exam->currentQuestion($participation, $competition);
-
-        return response()->json($this->envelope($participation, $question));
+        return response()->json($this->exam->state($participation, $settings));
     }
 
     public function currentQuestion(Request $request): JsonResponse
     {
-        $competition = $this->requireCompetition();
-        $participation = $this->requireParticipation($request, $competition);
+        $settings = $this->requireSettings();
 
         // Same envelope as /exam/start, so the client renders one shape whether
-        // it just started, resumed, or merely refreshed.
-        return response()->json($this->envelope(
-            $participation,
-            $this->exam->currentQuestion($participation, $competition),
+        // it just began, resumed, or merely refreshed.
+        return response()->json($this->exam->state(
+            $this->requireParticipation($request),
+            $settings,
         ));
     }
 
     public function submit(SubmitAnswerRequest $request): JsonResponse
     {
-        $competition = $this->requireCompetition();
-        $participation = $this->requireParticipation($request, $competition);
+        $settings = $this->requireSettings();
+        $participation = $this->requireParticipation($request);
 
         $outcome = $this->exam->submitAnswer(
             $participation,
-            $competition,
+            $settings,
             $request->questionId(),
             $request->selectedOption(),
         );
 
+        // The tail of the answer is the same state the client would have got by
+        // asking, so a submission needs no follow-up round trip.
+        $state = $this->exam->state($participation, $settings);
+
         return response()->json($outcome + [
-            'next_question' => $this->exam->currentQuestion($participation, $competition),
+            'next_question' => $state['question'],
+            'waiting' => $state['waiting'],
         ]);
     }
 
     public function result(Request $request): JsonResponse
     {
-        $competition = $this->requireCompetition();
+        $settings = $this->requireSettings();
 
         return response()->json($this->exam->result(
-            $this->requireParticipation($request, $competition),
-            $competition,
+            $this->requireParticipation($request),
+            $settings,
         ));
-    }
-
-    /**
-     * The shared envelope. The service mutates the participation in place, so
-     * its state here is already post-reconciliation — no re-read is needed.
-     *
-     * @param  array<string, mixed>|null  $question
-     * @return array<string, mixed>
-     */
-    private function envelope(CompetitionUser $participation, ?array $question): array
-    {
-        return [
-            'exam_status' => $participation->exam_status,
-            'started_at' => $participation->started_at?->toIso8601String(),
-            'question' => $question,
-        ];
     }
 
     // ───────────────────────────────────────────────────────── internals ────
 
     /**
-     * Phase 1 runs exactly one competition, so the backend resolves it rather
-     * than letting the client name one — another identifier the client cannot
-     * tamper with.
+     * Phase 1 runs exactly one competition, and its configuration is a database
+     * singleton. The client never names it — there is nothing to name.
      */
-    private function activeCompetition(): ?Competition
+    private function requireSettings(): CompetitionSettings
     {
-        return Competition::query()->orderBy('id')->first();
-    }
+        $settings = CompetitionSettings::current();
 
-    private function requireCompetition(): Competition
-    {
-        $competition = $this->activeCompetition();
-
-        if ($competition === null) {
+        if ($settings === null) {
             throw ExamException::competitionNotOpen();
         }
 
-        return $competition;
+        return $settings;
     }
 
-    private function requireParticipation(Request $request, Competition $competition): CompetitionUser
+    private function requireParticipation(Request $request): CompetitionUser
     {
-        $participation = $this->exam->participationFor($request->user(), $competition);
+        $participation = $this->exam->participationFor($request->user());
 
         if ($participation === null) {
             throw ExamException::notAContestant();

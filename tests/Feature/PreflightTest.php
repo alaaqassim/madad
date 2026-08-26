@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Models\Competition;
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use App\Services\Competition\PreflightCheck;
 use App\Services\Competition\PreflightService;
@@ -31,7 +31,7 @@ class PreflightTest extends TestCase
      * configuration is simulated here — otherwise APP_ENV=testing would warn and
      * a genuine PASS could never be observed.
      */
-    private function healthyCompetition(): Competition
+    private function healthyCompetition(): CompetitionSettings
     {
         config(['app.env' => 'production', 'app.debug' => false]);
 
@@ -124,15 +124,33 @@ class PreflightTest extends TestCase
         $this->artisan('madad:preflight --strict')->assertExitCode(1);
     }
 
-    public function test_a_second_competition_is_a_warning_not_a_blocker(): void
+    /**
+     * The old shape of this test asked whether a SECOND competition was a
+     * warning. Under the singleton it is not a warning, it is impossible: the
+     * database refuses the row. That is a stronger guarantee, so this now
+     * proves the refusal rather than the warning.
+     */
+    public function test_a_second_settings_row_cannot_exist_at_all(): void
     {
         $competition = $this->healthyCompetition();
-        $this->makeCompetition(['name' => 'A second competition']);
 
-        $report = $this->preflight()->run($competition);
+        try {
+            DB::table('competition_settings')->insert([
+                'id' => 2,
+                'name' => 'A second competition',
+                'status' => 'draft',
+                'show_result' => false,
+                'question_count' => 75,
+                'seconds_per_question' => 40,
+                'exam_duration_minutes' => 60,
+            ]);
+            $this->fail('the database accepted a second settings row');
+        } catch (\Throwable $e) {
+            $this->assertStringContainsString('chk_competition_settings_singleton', $e->getMessage());
+        }
 
-        $this->assertSame([], $report->failures());
-        $this->assertContains('exists', array_map(fn (PreflightCheck $c) => $c->name, $report->warnings()));
+        $this->assertSame(1, DB::table('competition_settings')->count());
+        $this->assertSame([], $this->preflight()->run($competition)->failures());
     }
 
     // ── FAIL ────────────────────────────────────────────────────────────────
@@ -157,7 +175,6 @@ class PreflightTest extends TestCase
         $competition = $this->healthyCompetition();
 
         DB::table('competition_questions')
-            ->where('competition_id', $competition->id)
             ->where('question_number', 3)
             ->update(['option_c' => '']);
 
@@ -170,7 +187,7 @@ class PreflightTest extends TestCase
     public function test_a_zero_second_timer_is_a_blocker(): void
     {
         $competition = $this->healthyCompetition();
-        DB::table('competitions')->where('id', $competition->id)->update(['seconds_per_question' => 0]);
+        DB::table('competition_settings')->where('id', 1)->update(['seconds_per_question' => 0]);
 
         $report = $this->preflight()->run($competition->fresh());
 
@@ -239,12 +256,19 @@ class PreflightTest extends TestCase
         $this->assertStringContainsString('1 participations point at a user row', $this->detail($report->failures(), 'orphan account links'));
     }
 
-    public function test_no_competition_at_all_is_a_blocker(): void
+    public function test_no_settings_row_at_all_is_a_blocker(): void
     {
+        // The migration seeds the singleton, so removing it is the only way to
+        // reach this state — and an operator who has done that must be told.
+        DB::table('competition_settings')->delete();
+
         $report = $this->preflight()->run();
 
         $this->assertSame(PreflightCheck::FAIL, $report->verdict());
-        $this->assertStringContainsString('no competition row exists', $this->detail($report->failures(), 'exists'));
+        $this->assertStringContainsString(
+            'no competition_settings row exists',
+            $this->detail($report->failures(), 'settings'),
+        );
     }
 
     public function test_the_command_exits_non_zero_on_a_blocker(): void
@@ -277,7 +301,7 @@ class PreflightTest extends TestCase
     /** @return array<string, mixed> */
     private function fingerprint(): array
     {
-        $tables = ['competitions', 'competition_questions', 'competition_users', 'users'];
+        $tables = ['competition_settings', 'competition_questions', 'competition_users', 'users'];
         $fingerprint = [];
 
         foreach ($tables as $table) {

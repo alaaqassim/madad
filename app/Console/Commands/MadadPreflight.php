@@ -2,7 +2,6 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Competition;
 use App\Services\Competition\PreflightCheck;
 use App\Services\Competition\PreflightService;
 use Illuminate\Console\Command;
@@ -21,7 +20,6 @@ use Illuminate\Console\Command;
 class MadadPreflight extends Command
 {
     protected $signature = 'madad:preflight
-                            {competition? : Competition id. Omit when there is only one}
                             {--strict : Treat warnings as failures for the exit code}
                             {--json= : Also write the full report to this path as JSON}';
 
@@ -29,20 +27,10 @@ class MadadPreflight extends Command
 
     public function handle(PreflightService $preflight): int
     {
-        $id = $this->argument('competition');
-        $competition = null;
-
-        if ($id !== null) {
-            $competition = Competition::query()->find($id);
-
-            if ($competition === null) {
-                $this->error('Competition not found.');
-
-                return self::FAILURE;
-            }
-        }
-
-        $report = $preflight->run($competition);
+        // The settings singleton, resolved by the service itself. A missing
+        // row is a FAIL inside the report rather than a crash here: an operator
+        // running preflight on a broken install must still get a report.
+        $report = $preflight->run();
 
         $this->render($report->checks);
 

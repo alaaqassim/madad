@@ -2,7 +2,7 @@
 
 namespace App\Services\Competition;
 
-use App\Models\Competition;
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use Illuminate\Support\Collection;
 
@@ -25,10 +25,9 @@ use Illuminate\Support\Collection;
 class ResultService
 {
     /** @return Collection<int, CompetitionUser> */
-    public function completed(Competition $competition, ?int $limit = null): Collection
+    public function completed(?int $limit = null): Collection
     {
         $query = CompetitionUser::query()
-            ->where('competition_id', $competition->id)
             ->where('exam_status', CompetitionUser::EXAM_COMPLETED)
             ->orderByDesc('correct_answers')
             ->orderBy('id')                 // stability only — see class docblock
@@ -46,20 +45,20 @@ class ResultService
      *
      * No password, no hash, no answer key, no per-question detail — an export
      * that carried any of those would be a leak the moment it left the server.
-     * `total_questions` comes from the competition, not from a count of the
+     * `total_questions` comes from the settings row, not from a count of the
      * contestant's rows, so a short paper would show up as a discrepancy rather
      * than be silently normalised away.
      *
      * @return array<string, mixed>
      */
-    public function row(CompetitionUser $participation, Competition $competition): array
+    public function row(CompetitionUser $participation, CompetitionSettings $settings): array
     {
         return [
             'competition_user_id' => $participation->id,
             'name' => $participation->contestant_name,
             'email' => $participation->contestant_email,
             'correct_answers' => $participation->correct_answers,
-            'total_questions' => $competition->question_count,
+            'total_questions' => $settings->questionCount(),
             'answered_questions' => $participation->answered_questions,
             'started_at' => $participation->started_at?->toIso8601String(),
             'completed_at' => $participation->completed_at?->toIso8601String(),
@@ -71,15 +70,14 @@ class ResultService
      *
      * @return array<string, mixed>
      */
-    public function topN(Competition $competition, int $limit = 100): array
+    public function topN(CompetitionSettings $settings, int $limit = 100): array
     {
         // 0 (or less) means "every completed contestant" — the operator asking
         // for the whole field rather than a leaderboard.
-        $rows = $this->completed($competition, $limit > 0 ? $limit : null);
+        $rows = $this->completed($limit > 0 ? $limit : null);
         $cutoffScore = $rows->last()?->correct_answers;
 
         $tiedAtCutoff = $cutoffScore === null ? 0 : CompetitionUser::query()
-            ->where('competition_id', $competition->id)
             ->where('exam_status', CompetitionUser::EXAM_COMPLETED)
             ->where('correct_answers', $cutoffScore)
             ->count();
@@ -87,11 +85,10 @@ class ResultService
         $withinCutoff = $rows->where('correct_answers', $cutoffScore)->count();
 
         return [
-            'competition' => $competition->name,
+            'competition' => $settings->name,
             'limit' => $limit,
             'returned' => $rows->count(),
             'total_completed' => CompetitionUser::query()
-                ->where('competition_id', $competition->id)
                 ->where('exam_status', CompetitionUser::EXAM_COMPLETED)
                 ->count(),
             'ordered_by' => 'correct_answers DESC',
@@ -101,7 +98,7 @@ class ResultService
             // left, the boundary is genuinely undecided.
             'cutoff_is_contested' => $cutoffScore !== null && $tiedAtCutoff > $withinCutoff,
             'contestants_tied_at_cutoff' => $tiedAtCutoff,
-            'rows' => $rows->map(fn (CompetitionUser $p) => $this->row($p, $competition))->all(),
+            'rows' => $rows->map(fn (CompetitionUser $p) => $this->row($p, $settings))->all(),
         ];
     }
 }

@@ -9,6 +9,12 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * One contestant's participation: import record, account provisioning state,
  * credential delivery state, exam state and result, in a single row.
  *
+ * The ENTIRE exam lives on this row. `question_order` is the contestant's own
+ * randomised paper — a JSON array of competition_questions ids. `current_question`
+ * is a ZERO-BASED INDEX into that array, never a question id. `answers` is one
+ * character per position. `started_at` is the only timing anchor there is;
+ * every deadline the API reports is derived from it on the spot.
+ *
  * `user_id` is nullable on purpose — the participation row is created before
  * the account, so a failed provisioning attempt is a visible, retryable row
  * rather than no record at all.
@@ -55,7 +61,6 @@ class CompetitionUser extends Model
     protected $dateFormat = 'Y-m-d H:i:s.v';
 
     protected $fillable = [
-        'competition_id',
         'user_id',
         'contestant_name',
         'contestant_email',
@@ -71,7 +76,6 @@ class CompetitionUser extends Model
         'completed_at',
         'question_order',
         'current_question',
-        'current_question_started_at',
         'answers',
         'correct_answers',
         'answered_questions',
@@ -80,7 +84,6 @@ class CompetitionUser extends Model
     protected function casts(): array
     {
         return [
-            'competition_id' => 'integer',
             'user_id' => 'integer',
             'email_attempts' => 'integer',
             'correct_answers' => 'integer',
@@ -94,15 +97,13 @@ class CompetitionUser extends Model
             'credentials_sent_at' => 'datetime',
             'started_at' => 'datetime',
             'completed_at' => 'datetime',
-            'current_question_started_at' => 'datetime',
         ];
     }
 
-    /** @return BelongsTo<Competition, $this> */
-    public function competition(): BelongsTo
-    {
-        return $this->belongsTo(Competition::class);
-    }
+    /*
+     * No competition relation. There is one competition and its configuration
+     * is the CompetitionSettings singleton, which nothing here needs a key to.
+     */
 
     /** @return BelongsTo<User, $this> */
     public function user(): BelongsTo
@@ -123,6 +124,25 @@ class CompetitionUser extends Model
     public function isInProgress(): bool
     {
         return $this->exam_status === self::EXAM_IN_PROGRESS;
+    }
+
+    /**
+     * Never started.
+     *
+     * Both halves are checked on purpose. `current_question = 0` does NOT mean
+     * "not started" — a contestant who has pressed Begin and not yet answered
+     * anything sits at index 0 with the clock running, and treating that as a
+     * fresh start would restart their timeline.
+     */
+    public function isNotStarted(): bool
+    {
+        return $this->exam_status === self::EXAM_NOT_STARTED && $this->started_at === null;
+    }
+
+    /** Has pressed Begin, whatever their index. */
+    public function hasStarted(): bool
+    {
+        return ! $this->isNotStarted();
     }
 
     /**

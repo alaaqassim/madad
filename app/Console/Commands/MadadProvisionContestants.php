@@ -2,7 +2,6 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Competition;
 use App\Models\CompetitionUser;
 use App\Services\Competition\CredentialDeliveryService;
 use Illuminate\Console\Command;
@@ -27,7 +26,6 @@ use Illuminate\Support\Facades\DB;
 class MadadProvisionContestants extends Command
 {
     protected $signature = 'madad:provision
-                            {competition? : Competition id. Omit when there is only one}
                             {--limit=0 : Stop after this many participations (0 = all)}
                             {--retry-failed : Include participations whose delivery previously failed}
                             {--dry-run : Report what would be attempted and change nothing}';
@@ -36,16 +34,9 @@ class MadadProvisionContestants extends Command
 
     public function handle(CredentialDeliveryService $delivery): int
     {
-        $competition = $this->resolveCompetition();
-
-        if ($competition === null) {
-            return self::FAILURE;
-        }
-
-        $before = $this->snapshot($competition);
+        $before = $this->snapshot();
 
         $query = CompetitionUser::query()
-            ->where('competition_id', $competition->id)
             // Already delivered is never re-sent: a resend would invalidate a
             // password the contestant is already holding.
             ->where('email_status', '!=', CompetitionUser::EMAIL_SENT);
@@ -94,7 +85,7 @@ class MadadProvisionContestants extends Command
             $errors[] = "{$participation->contestant_email} — {$error}";
         });
 
-        $after = $this->snapshot($competition);
+        $after = $this->snapshot();
 
         $this->newLine();
         $this->table(['this run', 'count'], [
@@ -134,9 +125,9 @@ class MadadProvisionContestants extends Command
     }
 
     /** @return array<string, int> */
-    private function snapshot(Competition $competition): array
+    private function snapshot(): array
     {
-        $base = fn () => DB::table('competition_users')->where('competition_id', $competition->id);
+        $base = fn () => DB::table('competition_users');
 
         $accounts = $base()->selectRaw('account_status, COUNT(*) c')->groupBy('account_status')->pluck('c', 'account_status');
         $emails = $base()->selectRaw('email_status, COUNT(*) c')->groupBy('email_status')->pluck('c', 'email_status');
@@ -165,32 +156,5 @@ class MadadProvisionContestants extends Command
             ['email: sent', $snapshot['email_sent']],
             ['email: failed', $snapshot['email_failed']],
         ]);
-    }
-
-    private function resolveCompetition(): ?Competition
-    {
-        $id = $this->argument('competition');
-
-        if ($id !== null) {
-            $competition = Competition::query()->find($id);
-
-            if ($competition === null) {
-                $this->error('Competition not found.');
-            }
-
-            return $competition;
-        }
-
-        $competitions = Competition::query()->orderBy('id')->get();
-
-        if ($competitions->count() !== 1) {
-            $this->error($competitions->isEmpty()
-                ? 'No competition exists.'
-                : 'More than one competition exists — name the one you mean.');
-
-            return null;
-        }
-
-        return $competitions->first();
     }
 }

@@ -57,7 +57,6 @@ class QuestionOrderTest extends TestCase
             $this->assertSame($questionId, $contestant->questionIdAt($index));
             $this->assertDatabaseHas('competition_questions', [
                 'id' => $questionId,
-                'competition_id' => $competition->id,
             ]);
         }
     }

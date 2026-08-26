@@ -3,7 +3,6 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
  * One question from the imported bank.
@@ -14,7 +13,6 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * should.
  *
  * @property int $id
- * @property int $competition_id
  * @property int $question_number
  * @property string $question_text
  * @property string $correct_option
@@ -24,7 +22,6 @@ class CompetitionQuestion extends Model
     public const OPTIONS = ['A', 'B', 'C', 'D'];
 
     protected $fillable = [
-        'competition_id',
         'question_number',
         'question_text',
         'option_a',
@@ -40,16 +37,15 @@ class CompetitionQuestion extends Model
     protected function casts(): array
     {
         return [
-            'competition_id' => 'integer',
             'question_number' => 'integer',
         ];
     }
 
-    /** @return BelongsTo<Competition, $this> */
-    public function competition(): BelongsTo
-    {
-        return $this->belongsTo(Competition::class);
-    }
+    /*
+     * No competition relation. Madad runs one competition, so every question in
+     * this table belongs to it; a foreign key would only be a constant stored
+     * 75 times.
+     */
 
     /**
      * The contestant-safe shape. Deliberately explicit rather than an $except

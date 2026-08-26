@@ -2,8 +2,8 @@
 
 namespace Tests\Feature;
 
-use App\Models\Competition;
 use App\Models\CompetitionQuestion;
+use App\Models\CompetitionSettings;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
@@ -66,7 +66,7 @@ class ExamHttpTest extends TestCase
 
     public function test_the_status_endpoint_is_public_and_reports_a_closed_portal(): void
     {
-        $this->makeCompetition(['status' => Competition::STATUS_READY]);
+        $this->makeCompetition(['status' => CompetitionSettings::STATUS_READY]);
 
         $this->getJson('/api/competition/status')
             ->assertOk()
@@ -100,7 +100,7 @@ class ExamHttpTest extends TestCase
 
     public function test_a_closed_portal_refuses_to_start_over_http(): void
     {
-        $competition = $this->makeCompetition(['status' => Competition::STATUS_CLOSED, 'question_count' => 5]);
+        $competition = $this->makeCompetition(['status' => CompetitionSettings::STATUS_CLOSED, 'question_count' => 5]);
         $this->makeQuestions($competition, 5);
         $participation = $this->makeContestant($competition);
 

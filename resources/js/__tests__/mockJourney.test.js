@@ -34,6 +34,23 @@ function fakeClock(start = 1_800_000_000_000) {
     return { now: () => t, advance: (seconds) => (t += seconds * 1000) };
 }
 
+/*
+| Under the fixed timeline every position owns a slot measured from startedAt,
+| so a contestant who answers instantly cannot answer the next one instantly
+| too — the clock has to reach the next slot. This drives the exam the way a
+| real contestant experiences it: answer, wait out the remainder of the slot,
+| answer again.
+*/
+async function answerThroughSlot(exam, clock, option, seconds = 40) {
+    exam.select(option);
+    await exam.submitAnswer();
+
+    if (exam.screen.value === SCREEN.WAITING) {
+        clock.advance(seconds);
+        await exam.refreshCurrent();
+    }
+}
+
 function build(journey) {
     const scope = effectScope();
 
@@ -78,11 +95,10 @@ describe('the mock contestant journey', () => {
         expect(exam.question.value.sequence).toBe(1);
         expect(Object.keys(exam.question.value.options)).toEqual(['A', 'B', 'C', 'D']);
 
-        // ── answer questions 1..3 ────────────────────────────────────────────
+        // ── answer questions 1..3, each inside its own fixed slot ────────────
         for (let n = 1; n <= 3; n++) {
             expect(exam.question.value.sequence).toBe(n);
-            exam.select('A');
-            await exam.submitAnswer();
+            await answerThroughSlot(exam, clock, 'A');
         }
         expect(exam.question.value.sequence).toBe(4);
 
@@ -94,11 +110,19 @@ describe('the mock contestant journey', () => {
         expect(exam.screen.value).toBe(SCREEN.EXAM);
         expect(exam.question.value.sequence).toBe(5);
         expect(exam.question.value.question_id).not.toBe(timedOutId);
-        expect(journey.__state().rows[3].timed_out).toBe(true);
-        expect(journey.__state().rows[3].selected_option).toBeNull();
+        // Position 3 (sequence 4) was spent by the clock with nothing recorded.
+        expect(journey.__state().answers[3]).toBe('-');
+        expect(journey.__state().currentQuestion).toBe(4);
 
         // ── finish the paper ─────────────────────────────────────────────────
-        while (exam.screen.value === SCREEN.EXAM) {
+        while (exam.screen.value === SCREEN.EXAM || exam.screen.value === SCREEN.WAITING) {
+            if (exam.screen.value === SCREEN.WAITING) {
+                clock.advance(40);
+                await exam.refreshCurrent();
+
+                continue;
+            }
+
             exam.select('B');
             await exam.submitAnswer();
         }
@@ -144,8 +168,9 @@ describe('the mock contestant journey', () => {
         await first.exam.login(MOCK_CONTESTANT);
         await first.exam.start();
 
-        first.exam.select('C');
-        await first.exam.submitAnswer(); // now on question 2
+        // Answer question 1, then wait out the rest of its fixed slot so that
+        // question 2 is genuinely live before the "refresh".
+        await answerThroughSlot(first.exam, clock, 'C');
 
         const before = {
             sequence: first.exam.question.value.sequence,
@@ -172,7 +197,9 @@ describe('the mock contestant journey', () => {
         expect(second.exam.question.value.question_text).toBe(before.text);
         expect(reloaded.__state().order).toEqual(before.order);
 
-        // The deadline did not move: 40 - 15 = 25 seconds left, not 40.
+        // The deadline did not move. Slot 1 runs from startedAt+40 to
+        // startedAt+80; the clock is at startedAt+55 (40 waiting out slot 0,
+        // then 15 reading), so 25 remain — not a fresh forty.
         expect(second.exam.timer.seconds.value).toBe(25);
     });
 
@@ -184,9 +211,15 @@ describe('the mock contestant journey', () => {
         await exam.login(MOCK_CONTESTANT);
         await exam.start();
 
-        // Answer every question with the option the bank marks correct for the
-        // first three, then a fixed letter — the score is computed, not staged.
-        while (exam.screen.value === SCREEN.EXAM) {
+        // Answer every question with 'A' — the score is computed, not staged.
+        while (exam.screen.value === SCREEN.EXAM || exam.screen.value === SCREEN.WAITING) {
+            if (exam.screen.value === SCREEN.WAITING) {
+                clock.advance(40);
+                await exam.refreshCurrent();
+
+                continue;
+            }
+
             exam.select('A');
             await exam.submitAnswer();
         }

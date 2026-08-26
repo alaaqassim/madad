@@ -28,7 +28,6 @@ Automated tests run on **`madad_test`** (`phpunit.xml`) and never touch
 
 ```bash
 php artisan madad:preflight                # full report
-php artisan madad:preflight 2              # a specific competition
 php artisan madad:preflight --strict       # exit 1 on warnings too
 php artisan madad:preflight --json=out.json
 ```
@@ -63,16 +62,47 @@ php artisan madad:status                          # report only — changes noth
 php artisan madad:status --set=open               # asks for confirmation
 php artisan madad:status --set=closed             # asks for confirmation
 php artisan madad:status --set=open --force       # non-interactive
-php artisan madad:status 2 --set=ready
+php artisan madad:status --set=ready
 ```
 
 With no `--set` it only reports: competition name, status, portal open,
-`question_count`, `seconds_per_question`, `show_result`, contestant totals and
-the `not_started` / `in_progress` / `completed` split, plus the question-bank
-size.
+`question_count`, `seconds_per_question`, `show_result`,
+`exam_duration_minutes`, the availability window and whether the clock is
+inside it right now, contestant totals and the `not_started` / `in_progress` /
+`completed` split, plus the question-bank size.
 
 There is no toggle. A change requires naming both the action and the target
-value, so no shape of this command alters anything by accident.
+value, so no shape of this command alters anything by accident. None of the
+`madad:*` commands takes a competition id any more — there is one competition,
+its configuration is the `competition_settings` singleton, and there is nothing
+to select.
+
+### Two conditions, not one
+
+The portal is usable only when **both** are true:
+
+* `status = open` — the operator's switch, set here;
+* the server clock is inside `[starts_at, ends_at)` — the announced schedule.
+
+A window that has already passed refuses contestants as **`competition_closed`**
+even while `status` still reads `open`, because waiting cannot help them. Set
+the window with a direct update to `competition_settings`; preflight reports it
+back and warns when the time left is too short for a full paper.
+
+### Two different clocks
+
+`competition_settings.starts_at` / `ends_at` are the **global availability
+window**: when anyone may use the portal. `exam_duration_minutes` (60) is the
+**personal allowance** each contestant gets from their own Begin. A contestant's
+attempt ends at the earlier of the two:
+
+```
+effective_end = min( competition_users.started_at + 60 minutes , ends_at )
+```
+
+So a contestant beginning at 10:15 against an 11:00 window gets 45 minutes, and
+the ready screen tells them so before they press Begin. No end time is stored
+anywhere — it is derived on every request from `started_at`.
 
 ### Opening
 
@@ -187,7 +217,7 @@ property of a query, not of a contestant.
 ## 5. `madad:import-questions`
 
 ```bash
-php artisan madad:import-questions 2 questions.csv
+php artisan madad:import-questions questions.csv
 ```
 
 Retained and tested, but **not the intended route for the real competition**.

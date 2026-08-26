@@ -4,9 +4,9 @@ namespace Tests\Feature;
 
 use App\Models\CompetitionUser;
 use App\Services\Competition\CredentialDeliveryService;
-use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Tests\Support\MadadFixtures;
 use Tests\TestCase;
 
@@ -14,9 +14,15 @@ use Tests\TestCase;
  * THE DATABASE CONTRACT IS LOCKED.
  *
  * The competition schema was agreed and must not drift. This file is the lock:
- * the four tables, their exact columns, their exact types, the uniqueness rules
- * that make a paper stable, and the millisecond precision that makes the timing
- * evidence admissible.
+ * the three competition tables, their exact columns, their exact types, the
+ * uniqueness rules that make a paper stable, and the millisecond precision that
+ * makes the timing evidence admissible.
+ *
+ * Two absences are asserted as hard as the presences, because both are business
+ * rules rather than tidying: `competition_user_questions` (the per-question
+ * assignment table the Array + Index model replaced) and
+ * `current_question_started_at` (the arrival anchor the fixed timeline
+ * replaced). A column that exists is a column something can start reading.
  *
  * A failure here is not a bug in this test — it means the schema changed, and
  * that is a decision that has to be made deliberately and re-agreed.
@@ -27,7 +33,7 @@ class DatabaseContractTest extends TestCase
 
     /** The three competition tables. Exactly these, and no more. */
     private const COMPETITION_TABLES = [
-        'competitions',
+        'competition_settings',
         'competition_questions',
         'competition_users',
     ];
@@ -40,13 +46,15 @@ class DatabaseContractTest extends TestCase
 
     /** @var array<string, array<string, string>> table => column => type */
     private const SCHEMA = [
-        'competitions' => [
-            'id' => 'bigint',
+        'competition_settings' => [
+            // A fixed key, not a sequence: see the singleton migration.
+            'id' => 'tinyint',
             'name' => 'varchar(191)',
             'status' => "enum('draft','ready','open','closed')",
             'show_result' => 'tinyint(1)',
             'question_count' => 'smallint',
             'seconds_per_question' => 'smallint',
+            'exam_duration_minutes' => 'smallint',
             'starts_at' => 'datetime',
             'ends_at' => 'datetime',
             'created_at' => 'datetime',
@@ -54,7 +62,6 @@ class DatabaseContractTest extends TestCase
         ],
         'competition_questions' => [
             'id' => 'bigint',
-            'competition_id' => 'bigint',
             'question_number' => 'smallint',
             'question_text' => 'text',
             'option_a' => 'varchar(500)',
@@ -67,7 +74,6 @@ class DatabaseContractTest extends TestCase
         ],
         'competition_users' => [
             'id' => 'bigint',
-            'competition_id' => 'bigint',
             'user_id' => 'bigint',
             'contestant_name' => 'varchar(191)',
             'contestant_email' => 'varchar(191)',
@@ -86,7 +92,6 @@ class DatabaseContractTest extends TestCase
             // the current bank already needs 277 and varchar(255) would truncate.
             'question_order' => 'varchar(1024)',
             'current_question' => 'smallint',
-            'current_question_started_at' => 'datetime(3)',
             'answers' => 'varchar(255)',
             'correct_answers' => 'smallint',
             'answered_questions' => 'smallint',
@@ -135,7 +140,7 @@ class DatabaseContractTest extends TestCase
         $expected = self::COMPETITION_TABLES;
         sort($expected);
 
-        $this->assertSame($expected, $competitionTables, 'the competition schema must be exactly these four tables');
+        $this->assertSame($expected, $competitionTables, 'the competition schema must be exactly these three tables');
     }
 
     public function test_every_column_matches_the_agreed_type(): void
@@ -151,7 +156,7 @@ class DatabaseContractTest extends TestCase
         // at. Narrowing any of these to whole seconds would silently make a
         // 40.000-second answer indistinguishable from a 40.999-second one.
         $precise = [
-            'competition_users' => ['started_at', 'completed_at', 'current_question_started_at'],
+            'competition_users' => ['started_at', 'completed_at'],
         ];
 
         foreach ($precise as $table => $columns) {
@@ -235,8 +240,8 @@ class DatabaseContractTest extends TestCase
     public function test_the_uniqueness_rules_that_keep_a_paper_stable_are_present(): void
     {
         $expected = [
-            'competition_questions' => ['uq_competition_questions_competition_number'],
-            'competition_users' => ['uq_competition_users_competition_email', 'uq_competition_users_competition_user'],
+            'competition_questions' => ['uq_competition_questions_number'],
+            'competition_users' => ['uq_competition_users_email', 'uq_competition_users_user'],
         ];
 
         foreach ($expected as $table => $indexes) {
@@ -250,6 +255,85 @@ class DatabaseContractTest extends TestCase
                 $this->assertContains($index, $present, "{$table} lost the unique index {$index}");
             }
         }
+    }
+
+    public function test_the_arrival_anchor_of_the_old_timing_model_is_gone(): void
+    {
+        // current_question_started_at belonged to the arrival-based window. The
+        // fixed timeline derives every deadline from started_at, so the column
+        // is not merely unused — it does not exist, and nothing can start
+        // reading it again by accident.
+        $this->assertArrayNotHasKey('current_question_started_at', $this->columns('competition_users'));
+        $this->assertFalse(Schema::hasColumn('competition_users', 'current_question_started_at'));
+
+        // started_at is the only timing anchor there is.
+        $this->assertArrayHasKey('started_at', $this->columns('competition_users'));
+    }
+
+    public function test_the_per_question_assignment_table_is_gone(): void
+    {
+        // The Array + Index model replaced one row per contestant-question with
+        // one array on the participation row. Recreating that table would be a
+        // return to 75,000 rows for 1,000 contestants.
+        $this->assertFalse(Schema::hasTable('competition_user_questions'));
+
+        $this->assertSame(0, DB::table('information_schema.TABLES')
+            ->where('TABLE_SCHEMA', DB::getDatabaseName())
+            ->where('TABLE_NAME', 'competition_user_questions')
+            ->count());
+    }
+
+    public function test_the_multi_competition_scaffolding_is_gone(): void
+    {
+        $this->assertFalse(Schema::hasTable('competitions'));
+        $this->assertFalse(Schema::hasColumn('competition_users', 'competition_id'));
+        $this->assertFalse(Schema::hasColumn('competition_questions', 'competition_id'));
+
+        // One foreign key survives, and it is the only relationship left.
+        $foreignKeys = DB::table('information_schema.KEY_COLUMN_USAGE')
+            ->where('TABLE_SCHEMA', DB::getDatabaseName())
+            ->whereNotNull('REFERENCED_TABLE_NAME')
+            ->pluck('CONSTRAINT_NAME')
+            ->all();
+
+        $this->assertSame(['fk_competition_users_user'], $foreignKeys);
+    }
+
+    public function test_the_settings_row_is_a_database_enforced_singleton(): void
+    {
+        $this->assertSame(1, DB::table('competition_settings')->count());
+
+        // id = 1 is refused by the primary key.
+        try {
+            DB::table('competition_settings')->insert($this->settingsRow(1));
+            $this->fail('a duplicate settings row was accepted');
+        } catch (\Throwable $e) {
+            $this->assertStringContainsString('Duplicate entry', $e->getMessage());
+        }
+
+        // Anything else is refused by the check constraint.
+        try {
+            DB::table('competition_settings')->insert($this->settingsRow(2));
+            $this->fail('a second settings row was accepted');
+        } catch (\Throwable $e) {
+            $this->assertStringContainsString('chk_competition_settings_singleton', $e->getMessage());
+        }
+
+        $this->assertSame(1, DB::table('competition_settings')->count());
+    }
+
+    /** @return array<string, mixed> */
+    private function settingsRow(int $id): array
+    {
+        return [
+            'id' => $id,
+            'name' => 'Another competition',
+            'status' => 'draft',
+            'show_result' => false,
+            'question_count' => 75,
+            'seconds_per_question' => 40,
+            'exam_duration_minutes' => 60,
+        ];
     }
 
     /**

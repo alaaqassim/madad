@@ -2,8 +2,8 @@
 
 namespace Tests\Feature;
 
-use App\Models\Competition;
 use App\Models\CompetitionQuestion;
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
@@ -24,7 +24,7 @@ class ContestantFlowHttpTest extends TestCase
 
     private const PASSWORD = 'contestant-password';
 
-    /** @return array{0: Competition, 1: CompetitionUser} */
+    /** @return array{0: CompetitionSettings, 1: CompetitionUser} */
     private function portal(int $questions = 5): array
     {
         $competition = $this->makeCompetition([
@@ -95,13 +95,19 @@ class ContestantFlowHttpTest extends TestCase
         $answer->assertJsonMissingPath('is_correct');
         $answer->assertJsonMissingPath('correct_option');
 
-        // ── the next question arrives with the answer ───────────────────────
-        $second = $answer->json('next_question');
+        // ── answering early hands back a waiting state, not the next question ──
+        $this->assertNull($answer->json('next_question'), 'the next slot was served before it opened');
+        $this->assertSame(2, $answer->json('waiting.sequence'));
+
+        // ── the next question arrives when its own fixed slot opens ──────────
+        $this->enterSlot($participation, $competition, 1);
+
+        $second = $this->getJson('/api/exam/current')->assertOk()->json('question');
         $this->assertSame(2, $second['sequence']);
         $this->assertPayloadShape($second);
 
-        // ── timeout path: let question 2 expire, then answer it late ────────
-        $this->travel(41)->seconds();
+        // ── timeout path: let slot 2 elapse, then answer it late ────────────
+        $this->enterSlot($participation, $competition, 2);
 
         $this->postJson('/api/exam/answer', [
             'question_id' => $second['question_id'],
@@ -115,28 +121,35 @@ class ContestantFlowHttpTest extends TestCase
         // ── continue: the exam is still live and serves question 3 ──────────
         $third = $this->getJson('/api/exam/current')->assertOk()->json('question');
         $this->assertSame(3, $third['sequence']);
-        // Windows are contiguous: position 3's began the instant position 2's
-        // closed, at t+40. One second of real time has passed since, so 39
-        // remain — a reload does not buy a fresh forty.
-        $this->assertSame(39.0, round($third['seconds_remaining']));
+        // Slot 2 owns started_at+80 → started_at+120 and we are two seconds
+        // into it, so 38 remain. A reload does not buy a fresh forty.
+        $this->assertSame(38.0, round($third['seconds_remaining']));
         $this->assertLessThanOrEqual(40.0, $third['seconds_remaining']);
 
-        // ── answer 3, 4 and the final question 5 ────────────────────────────
+        // ── answer 3, 4 and the final question 5, each inside its own slot ──
         $question = $third;
 
         for ($sequence = 3; $sequence <= 5; $sequence++) {
             $this->assertSame($sequence, $question['sequence']);
 
-            $response = $this->postJson('/api/exam/answer', [
+            $this->postJson('/api/exam/answer', [
                 'question_id' => $question['question_id'],
                 'selected_option' => $this->keyFor($question['question_id']),
             ])->assertOk();
 
-            $question = $response->json('next_question');
+            if ($sequence === 5) {
+                break;
+            }
+
+            $this->enterSlot($participation, $competition, $sequence);
+            $question = $this->getJson('/api/exam/current')->assertOk()->json('question');
         }
 
         // ── completion ──────────────────────────────────────────────────────
-        $this->assertNull($question, 'there is no question after the last one');
+        $this->assertNull(
+            $this->getJson('/api/exam/current')->assertOk()->json('question'),
+            'there is no question after the last one',
+        );
 
         $final = $this->getJson('/api/exam/current')->assertOk();
         $final->assertJsonPath('exam_status', CompetitionUser::EXAM_COMPLETED);

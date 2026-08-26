@@ -43,6 +43,12 @@ export const copy = {
         ruleQuestions: (total) => `عدد الأسئلة: ${total}`,
         ruleSeconds: (seconds) => `الوقت لكل سؤال: ${seconds} ثانية`,
         ruleNoBack: 'لا يمكن الرجوع إلى سؤال سابق بعد تجاوزه.',
+        ruleFixedSchedule: 'لكل سؤال وقته المحدّد منذ لحظة البدء، ولا يتغيّر بالإجابة المبكرة.',
+        ruleDuration: (minutes) => `المدّة الإجماليّة للمحاولة: ${minutes} دقيقة`,
+        // Shown only when the remaining competition window is shorter than the
+        // personal allowance: a late starter must know before they begin.
+        ruleShortWindow: (minutes) =>
+            `تنبيه: المتبقّي من وقت المسابقة ${minutes} دقيقة فقط، وستنتهي محاولتك بانتهائه.`,
         start: 'ابدأ المسابقة',
         resume: 'أكمل المسابقة',
         starting: 'جارٍ التحضير…',
@@ -67,6 +73,11 @@ export const copy = {
         timeoutBody: 'لم يعد بالإمكان الإجابة عليه. جارٍ الانتقال إلى الحالة التالية…',
         syncing: 'جارٍ التحقق من حالتك لدى الخادم…',
         leaveWarning: 'الوقت مستمر. الخروج الآن لن يوقف مؤقّت السؤال.',
+
+        // The transition between one fixed slot and the next.
+        waitingTitle: 'سُجّلت إجابتك',
+        waitingBody: (sequence) => `سيبدأ السؤال ${sequence} في موعده المحدّد.`,
+        waitingNote: 'وقت كل سؤال ثابت منذ بداية المحاولة، والإجابة المبكرة لا تقدّمه.',
     },
 
     completed: {

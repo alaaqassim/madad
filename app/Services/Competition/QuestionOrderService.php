@@ -3,8 +3,8 @@
 namespace App\Services\Competition;
 
 use App\Exceptions\ExamException;
-use App\Models\Competition;
 use App\Models\CompetitionQuestion;
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 
 /**
@@ -26,7 +26,7 @@ class QuestionOrderService
      *
      * @return list<int> competition_questions ids, in this contestant's order
      */
-    public function ensureOrder(CompetitionUser $participation, Competition $competition): array
+    public function ensureOrder(CompetitionUser $participation, CompetitionSettings $settings): array
     {
         $existing = $participation->order();
 
@@ -34,7 +34,7 @@ class QuestionOrderService
             return $existing;
         }
 
-        $order = $this->build($competition);
+        $order = $this->build($settings);
 
         $participation->forceFill([
             'question_order' => $order,
@@ -49,22 +49,21 @@ class QuestionOrderService
      *
      * @return list<int>
      */
-    public function build(Competition $competition): array
+    public function build(CompetitionSettings $settings): array
     {
         $questionIds = CompetitionQuestion::query()
-            ->where('competition_id', $competition->id)
             ->orderBy('question_number')
             ->pluck('id')
             ->all();
 
         // Refuse rather than hand out a short paper: a contestant sitting 60 of
         // 75 questions would be silently disadvantaged against the field.
-        if (count($questionIds) < $competition->question_count) {
+        if (count($questionIds) < $settings->questionCount()) {
             throw ExamException::paperNotReady();
         }
 
         shuffle($questionIds);
 
-        return array_values(array_map('intval', array_slice($questionIds, 0, $competition->question_count)));
+        return array_values(array_map('intval', array_slice($questionIds, 0, $settings->questionCount())));
     }
 }

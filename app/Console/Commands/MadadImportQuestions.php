@@ -2,7 +2,6 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Competition;
 use App\Services\Competition\CsvQuestionReader;
 use App\Services\Competition\QuestionImportService;
 use Illuminate\Console\Command;
@@ -16,22 +15,13 @@ use Throwable;
 class MadadImportQuestions extends Command
 {
     protected $signature = 'madad:import-questions
-                            {competition : Competition id}
                             {file : Path to a UTF-8 CSV export of the question workbook}
                             {--delimiter=, : Column delimiter}';
 
-    protected $description = 'Import the question bank for a competition (safe to rerun)';
+    protected $description = 'Import the question bank (safe to rerun)';
 
     public function handle(CsvQuestionReader $reader, QuestionImportService $importer): int
     {
-        $competition = Competition::query()->find($this->argument('competition'));
-
-        if ($competition === null) {
-            $this->error('Competition not found.');
-
-            return self::FAILURE;
-        }
-
         try {
             $rows = iterator_to_array($reader->read(
                 (string) $this->argument('file'),
@@ -43,7 +33,7 @@ class MadadImportQuestions extends Command
             return self::FAILURE;
         }
 
-        $summary = $importer->import($competition, $rows);
+        $summary = $importer->import($rows);
 
         $this->table(['inserted', 'updated', 'rejected'], [[
             $summary->insertedCount(),

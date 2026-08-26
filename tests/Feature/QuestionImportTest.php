@@ -29,7 +29,7 @@ class QuestionImportTest extends TestCase
     {
         $competition = $this->makeCompetition();
 
-        $summary = app(QuestionImportService::class)->import($competition, [
+        $summary = app(QuestionImportService::class)->import([
             $this->row(1), $this->row(2), $this->row(3),
         ]);
 
@@ -43,7 +43,7 @@ class QuestionImportTest extends TestCase
     {
         $competition = $this->makeCompetition();
 
-        $summary = app(QuestionImportService::class)->import($competition, [
+        $summary = app(QuestionImportService::class)->import([
             $this->row(1),
             $this->row(2, ['correct_option' => 'E']),
         ]);
@@ -58,7 +58,7 @@ class QuestionImportTest extends TestCase
     {
         $competition = $this->makeCompetition();
 
-        $summary = app(QuestionImportService::class)->import($competition, [
+        $summary = app(QuestionImportService::class)->import([
             $this->row(1, ['option_c' => '']),
         ]);
 
@@ -71,7 +71,7 @@ class QuestionImportTest extends TestCase
     {
         $competition = $this->makeCompetition();
 
-        $summary = app(QuestionImportService::class)->import($competition, [
+        $summary = app(QuestionImportService::class)->import([
             $this->row(1, ['question_text' => 'الأصل']),
             $this->row(1, ['question_text' => 'مكرر']),
         ]);
@@ -88,9 +88,9 @@ class QuestionImportTest extends TestCase
         $competition = $this->makeCompetition();
         $importer = app(QuestionImportService::class);
 
-        $importer->import($competition, [$this->row(1), $this->row(2)]);
+        $importer->import([$this->row(1), $this->row(2)]);
 
-        $second = $importer->import($competition, [
+        $second = $importer->import([
             $this->row(1, ['question_text' => 'نص محدَّث', 'correct_option' => 'D']),
             $this->row(2),
         ]);
@@ -107,7 +107,7 @@ class QuestionImportTest extends TestCase
     public function test_the_answer_key_is_never_serialised(): void
     {
         $competition = $this->makeCompetition();
-        app(QuestionImportService::class)->import($competition, [$this->row(1)]);
+        app(QuestionImportService::class)->import([$this->row(1)]);
 
         $question = CompetitionQuestion::query()->first();
 

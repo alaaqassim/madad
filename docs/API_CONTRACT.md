@@ -30,9 +30,10 @@ Locked by `tests/Feature/ContestantFlowHttpTest.php`, `ErrorContractTest.php`,
    for every subsequent call.
 
 No request in this API ever accepts a competition id, a participation id or a
-sequence number. The backend resolves the competition, and resolves the
-contestant's participation **from the authenticated session**. There is no
-identifier a client could substitute to reach another contestant's paper.
+sequence number. There is exactly one competition — its configuration is the
+`competition_settings` singleton — and the backend resolves the contestant's
+participation **from the authenticated session**. There is no identifier a
+client could substitute to reach another contestant's paper.
 
 ---
 
@@ -88,16 +89,29 @@ Public. Answers even when the portal is shut, so the client can explain why.
   "total_questions": 75,
   "seconds_per_question": 40,
   "show_result": false,
-  "server_time": "2026-09-05T09:00:00+00:00",
+  "starts_at": "2026-09-05T09:00:00+00:00",
+  "ends_at": "2026-09-05T11:00:00+00:00",
+  "exam_duration_minutes": 60,
+  "seconds_available": 2700,
+  "server_time": "2026-09-05T10:15:00+00:00",
   "participation": { "exam_status": "not_started", "account_status": "created" }
 }
 ```
 
 * `status` — `draft` | `ready` | `open` | `closed`.
-* `open` — the only thing that decides whether the exam may be used.
+* `open` — whether the exam may be used. It requires **both** `status = open`
+  **and** the server clock inside `[starts_at, ends_at)`.
 * `reason` — `null` when open; otherwise `competition_not_open` or
   **`competition_closed`**. `closed` is terminal: the competition has ended and
-  the client must not offer "try again later".
+  the client must not offer "try again later". A window that has **passed** is
+  reported as `competition_closed` too, because waiting cannot help.
+* `starts_at` / `ends_at` — the global availability window. Either may be
+  `null`, meaning unbounded on that side; `status` then governs alone.
+* `exam_duration_minutes` — the personal allowance each contestant gets from
+  their own Begin. **60.**
+* `seconds_available` — what a contestant beginning **now** would actually get:
+  `min(allowance, ends_at − now)`. Show this before Begin. A contestant starting
+  at 10:15 against an 11:00 window gets 2700, not 3600, and has to be told.
 * `participation` — present only when authenticated; `null` if the logged-in
   user is not a contestant.
 * When no competition row exists: `{"competition": null, "status": null, "open": false, "reason": "no_competition", "server_time": "…"}`.
@@ -105,13 +119,14 @@ Public. Answers even when the portal is shut, so the client can explain why.
 ### `POST /api/exam/start` → **200**
 
 Start and resume are the same call. A second start never reshuffles the paper,
-never restarts the clock, and never moves a deadline already issued.
+never moves `started_at`, and never reopens a slot whose time has passed.
 
 ```json
 {
   "exam_status": "in_progress",
   "started_at": "2026-09-05T09:00:04+00:00",
-  "question": { … see Question payload … }
+  "question": { … see Question payload … },
+  "waiting": null
 }
 ```
 
@@ -119,24 +134,75 @@ never restarts the clock, and never moves a deadline already issued.
 
 Identical envelope to `/exam/start`, so the client renders one shape.
 
+**Exactly one of `question` and `waiting` is ever non-null**, and both are null
+before the exam begins and once it is over.
+
+| `exam_status` | `question` | `waiting` | Means |
+|---|---|---|---|
+| `not_started` | `null` | `null` | Has not pressed Begin |
+| `in_progress` | payload | `null` | A question is live — answer it |
+| `in_progress` | `null` | payload | Answered early; the next fixed slot has not opened |
+| `completed` | `null` | `null` | The paper, the allowance or the window ended it |
+
+Branch on `exam_status` **first** and `waiting` **second**. A client that reads
+`question: null` as "finished" will drop a waiting contestant onto the results
+screen with most of their paper unanswered.
+
+### Waiting payload
+
 ```json
 {
-  "exam_status": "in_progress",
-  "started_at": "2026-09-05T09:00:04+00:00",
-  "question": { … } 
+  "sequence": 2,
+  "total_questions": 75,
+  "opens_at": "2026-09-05T09:00:44+00:00",
+  "server_time": "2026-09-05T09:00:09+00:00",
+  "seconds_remaining": 35.0
 }
 ```
 
-`question` is `null` once the paper is finished (`exam_status` is then
-`completed`) and also before the exam has begun (`exam_status` is
-`not_started`). Branch on `exam_status`, not on the absence of a question.
+No question, no options, no ids. `sequence` is the position **about to** open,
+so progress stays honest while the contestant waits. `seconds_remaining` is
+never greater than `seconds_per_question`, and the wait never exceeds one slot.
+Render it, count it down, and when it reaches zero call `GET /api/exam/current`
+— exactly as you already do when the question timer reaches zero.
 
 > **Reading the current question is a state change.** The server reconciles the
 > contestant's position against elapsed time on every request. A refresh
 > re-serves the same question with the same deadline, and time spent away is
-> spent: positions whose windows closed while the contestant was disconnected,
+> spent: positions whose slots closed while the contestant was disconnected,
 > logged out, or on another device are permanently skipped and cannot be
 > reclaimed. Reloading the page never buys time.
+
+### The timeline, in full
+
+`competition_users.started_at` is the **only** timing anchor stored. Nothing
+records when a question was opened, when a contestant arrived at a position,
+when they disconnected, or when they logged out. Every timestamp below is
+derived on the request that reports it:
+
+```
+s  = seconds_per_question (40)        n  = total_questions (75)
+t0 = started_at                       D  = exam_duration_minutes × 60 (3600)
+
+slot i         [ t0 + i·s ,  t0 + (i+1)·s )
+time_index     floor( (now − t0) / s )
+effective_end  min( t0 + D , ends_at )
+expires_at     min( slot_end , effective_end )
+```
+
+The exam is over when **any** of three things is true: the paper runs out
+(`current_question` reaches `n`), the personal allowance runs out, or the
+availability window closes. With 75 × 40 = 3000 seconds of slots inside a
+3600-second allowance, the paper is normally what ends it; the allowance and the
+window are ceilings that bind only a long paper or a late start.
+
+Two consequences the client must render correctly:
+
+* **Answering early does not shift anything.** Answer position 0 five seconds
+  in and position 1 still owns `t0+40 → t0+80`. You get a `waiting` payload for
+  those 35 seconds, not a head start.
+* **A late start gets less.** A contestant beginning at 10:15 against an 11:00
+  window has their last slot trimmed to 11:00 and is completed at 11:00.
 
 ### Question payload
 
@@ -160,7 +226,7 @@ Exactly these keys, in this order. Nothing else is ever included.
 |---|---|
 | `question_id` | Send this back with the answer. |
 | `sequence` | Position on **this contestant's** paper, 1-based. It is `current_question + 1`; the paper order itself is never sent. |
-| `opened_at` / `expires_at` | ISO 8601, server clock, millisecond precision. Derived from the contestant's timeline, never extended. |
+| `opened_at` / `expires_at` | ISO 8601, server clock. **Derived** from `started_at + i·s` on every request — nothing per-question is persisted, so there is no stored deadline that could drift or be extended. |
 | `server_time` | Use it to correct for client clock skew — never trust the device clock. |
 | `seconds_remaining` | Float, derived from `expires_at - server_time`, and never greater than `seconds_per_question`. Display only. |
 
@@ -194,12 +260,18 @@ body are ignored — the server computes them.
   "accepted": true,
   "sequence": 1,
   "exam_status": "in_progress",
-  "next_question": { … Question payload … }
+  "next_question": { … Question payload … },
+  "waiting": null
 }
 ```
 
-`next_question` is `null` when that was the last question; `exam_status` is then
-`completed`.
+`next_question` and `waiting` follow exactly the table under `/exam/current`:
+the tail of an answer is the same state the client would have got by asking, so
+a submission needs no follow-up round trip. Answering **early** — which is the
+common case — returns `next_question: null` with a `waiting` payload.
+
+`next_question` and `waiting` are both `null` when that was the last question;
+`exam_status` is then `completed`.
 
 **The response never says whether the answer was right.** Returning correctness
 per answer would turn the exam into an oracle for the answer key.
@@ -254,7 +326,7 @@ Validation errors additionally keep Laravel's per-field `errors` object:
 | `paper_not_ready` | 409 | Question bank smaller than `question_count` | Operator problem — tell them to contact support |
 | `exam_completed` | 409 | The exam has already finished | Navigate to the result screen |
 | `no_current_question` | 409 | No question awaiting an answer | Re-fetch `/exam/current` |
-| `question_not_available` | 422 | Not on this paper, already answered, already timed out, or not the current question | Re-fetch `/exam/current` |
+| `question_not_available` | 422 | Not on this paper, already answered, already timed out, not the current question, **or the next fixed slot has not opened yet** | Re-fetch `/exam/current` |
 | `question_expired` | 422 | The answer arrived after `expires_at` | Show "time is up", then re-fetch `/exam/current` |
 | `server_error` | 500 | Unexpected failure | Generic apology; retry |
 
@@ -273,13 +345,19 @@ id the client did not already have, or an answer-key clue. This holds even when
 
 1. **The server's clock is the only clock.** Use `server_time` and `expires_at`;
    never the device clock, and never a client-side countdown as the authority.
+   Changing the device clock changes nothing.
 2. **There is no grace period.** Exactly `seconds_per_question` (40). An answer
    one millisecond late is `question_expired` and the question is lost.
 3. **A timeout is not a failure of the exam.** After `question_expired`, call
-   `GET /api/exam/current`; the next question arrives with its own full window.
-4. **`closed` is terminal.** It stops new starts *and* in-progress contestants
-   from resuming, fetching another question, or answering. It is not a pause.
+   `GET /api/exam/current`; the next slot arrives with its own window.
+4. **`closed` is terminal**, and so is a window that has passed. Both stop new
+   starts *and* in-progress contestants from resuming, fetching another
+   question, or answering. Neither is a pause.
 5. **Refreshing is safe and buys nothing.** The same question comes back with
-   the same deadline.
+   the same deadline, because the deadline is arithmetic rather than a record.
 6. **Never cache a question payload across a reload** — always re-fetch
    `/exam/current`, which is the authority on what is live.
+7. **`in_progress` with no question is not the end.** Check `waiting` before
+   showing a completion screen.
+8. **Time never pauses.** A disconnect, a logout, a closed browser and a second
+   device all change nothing: elapsed slots are spent and are not given back.

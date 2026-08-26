@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Models\Competition;
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use App\Services\Competition\ResultExporter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -34,9 +34,12 @@ class ResultExportTest extends TestCase
         parent::tearDown();
     }
 
-    private function completed(Competition $competition, int $correct, ?string $name = null): CompetitionUser
+    private function completed(int $correct, ?string $name = null): CompetitionUser
     {
-        $participation = $this->makeContestant($competition, $name === null ? [] : ['contestant_name' => $name]);
+        $participation = $this->makeContestant(
+            CompetitionSettings::current(),
+            $name === null ? [] : ['contestant_name' => $name],
+        );
 
         $participation->forceFill([
             'contestant_name' => $name ?? $participation->contestant_name,
@@ -62,7 +65,7 @@ class ResultExportTest extends TestCase
     public function test_the_file_begins_with_a_utf8_bom_so_excel_reads_arabic(): void
     {
         $competition = $this->makeCompetition(['question_count' => 75]);
-        $this->completed($competition, 70, 'أحمد بن عبد الله');
+        $this->completed(70, 'أحمد بن عبد الله');
 
         app(ResultExporter::class)->export($competition, $this->path, 100);
 
@@ -74,8 +77,8 @@ class ResultExportTest extends TestCase
     public function test_arabic_names_survive_the_round_trip_intact(): void
     {
         $competition = $this->makeCompetition(['question_count' => 75]);
-        $this->completed($competition, 70, 'أحمد بن عبد الله');
-        $this->completed($competition, 60, 'فاطمة الزهراء');
+        $this->completed(70, 'أحمد بن عبد الله');
+        $this->completed(60, 'فاطمة الزهراء');
 
         app(ResultExporter::class)->export($competition, $this->path, 100);
         $contents = $this->contents();
@@ -96,7 +99,7 @@ class ResultExportTest extends TestCase
     public function test_the_columns_are_the_agreed_headings_in_a_fixed_order(): void
     {
         $competition = $this->makeCompetition(['question_count' => 75]);
-        $this->completed($competition, 70);
+        $this->completed(70);
 
         app(ResultExporter::class)->export($competition, $this->path, 100);
 
@@ -129,7 +132,7 @@ class ResultExportTest extends TestCase
         $this->makeQuestions($competition, 5);
 
         for ($i = 0; $i < 5; $i++) {
-            $this->completed($competition, 70 - $i);
+            $this->completed(70 - $i);
         }
 
         app(ResultExporter::class)->export($competition, $this->path, 100);
@@ -145,7 +148,7 @@ class ResultExportTest extends TestCase
         $competition = $this->makeCompetition(['question_count' => 75]);
 
         for ($i = 0; $i < 8; $i++) {
-            $this->completed($competition, 50);
+            $this->completed(50);
         }
 
         app(ResultExporter::class)->export($competition, $this->path, 100);
@@ -160,7 +163,7 @@ class ResultExportTest extends TestCase
     public function test_only_completed_contestants_are_exported(): void
     {
         $competition = $this->makeCompetition(['question_count' => 75]);
-        $this->completed($competition, 70);
+        $this->completed(70);
 
         $this->makeContestant($competition); // not_started
         $inProgress = $this->makeContestant($competition);
@@ -176,7 +179,7 @@ class ResultExportTest extends TestCase
     public function test_a_name_that_looks_like_a_formula_is_neutralised(): void
     {
         $competition = $this->makeCompetition(['question_count' => 75]);
-        $this->completed($competition, 70, '=HYPERLINK("http://evil","click")');
+        $this->completed(70, '=HYPERLINK("http://evil","click")');
 
         app(ResultExporter::class)->export($competition, $this->path, 100);
 
@@ -191,7 +194,7 @@ class ResultExportTest extends TestCase
         $competition = $this->makeCompetition(['question_count' => 75]);
 
         for ($i = 0; $i < 105; $i++) {
-            $this->completed($competition, 75 - (int) ($i / 2));
+            $this->completed(75 - (int) ($i / 2));
         }
 
         $payload = app(ResultExporter::class)->export($competition, $this->path, 100);
@@ -207,11 +210,11 @@ class ResultExportTest extends TestCase
 
         // 98 clear places, then five contestants tied for the last two.
         for ($i = 0; $i < 98; $i++) {
-            $this->completed($competition, 75 - (int) ($i / 4) - 10);
+            $this->completed(75 - (int) ($i / 4) - 10);
         }
 
         for ($i = 0; $i < 5; $i++) {
-            $this->completed($competition, 1);
+            $this->completed(1);
         }
 
         $payload = app(ResultExporter::class)->export($competition, $this->path, 100);
@@ -233,7 +236,7 @@ class ResultExportTest extends TestCase
         $competition = $this->makeCompetition(['question_count' => 75]);
 
         for ($i = 0; $i < 10; $i++) {
-            $this->completed($competition, 70 - $i);
+            $this->completed(70 - $i);
         }
 
         $payload = app(ResultExporter::class)->export($competition, $this->path, 100);
@@ -247,7 +250,7 @@ class ResultExportTest extends TestCase
         $competition = $this->makeCompetition(['question_count' => 75]);
 
         for ($i = 0; $i < 12; $i++) {
-            $this->completed($competition, 40);
+            $this->completed(40);
         }
 
         $payload = app(ResultExporter::class)->export($competition, $this->path, 0);
@@ -259,8 +262,8 @@ class ResultExportTest extends TestCase
     public function test_the_command_writes_the_file_and_reports_the_counts(): void
     {
         $competition = $this->makeCompetition(['question_count' => 75]);
-        $this->completed($competition, 70, 'سعاد المنصوري');
-        $this->completed($competition, 55);
+        $this->completed(70, 'سعاد المنصوري');
+        $this->completed(55);
 
         $this->artisan('madad:results', ['--top' => 100, '--export' => $this->path])
             ->expectsOutputToContain('CSV written to')

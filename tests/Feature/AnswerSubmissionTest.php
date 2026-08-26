@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use App\Exceptions\ExamException;
-use App\Models\Competition;
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use App\Services\Competition\CompetitionExamService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -16,12 +16,18 @@ use Tests\TestCase;
  * The client sends an option. It does not send a position, and the question id
  * it may send is only ever checked against the one the server already resolved
  * from question_order[current_question] — never used to choose.
+ *
+ * Note `enterSlot()` before each successive answer. Under the fixed timeline
+ * position N is only answerable inside [started_at + N·s, started_at + (N+1)·s),
+ * so a contestant who answers instantly cannot fire the next answer instantly
+ * too — the clock has to reach the next slot first. That is the rule under
+ * test as much as it is scaffolding.
  */
 class AnswerSubmissionTest extends TestCase
 {
     use MadadFixtures, RefreshDatabase;
 
-    /** @return array{0: Competition, 1: CompetitionUser, 2: CompetitionExamService} */
+    /** @return array{0: CompetitionSettings, 1: CompetitionUser, 2: CompetitionExamService} */
     private function startedContestant(int $questions = 5): array
     {
         $competition = $this->makeCompetition(['question_count' => $questions]);
@@ -57,9 +63,11 @@ class AnswerSubmissionTest extends TestCase
     {
         [$competition, $contestant, $service] = $this->startedContestant();
 
-        // Position 1's correct option, submitted at position 0. It must be
-        // graded against position 0's question, not position 1's.
+        // Each answer is graded against the question at the index it was given
+        // at, never the one the option happens to suit.
         $service->submitAnswer($contestant, $competition, null, $this->correctOptionAt($contestant, 0));
+
+        $this->enterSlot($contestant, $competition, 1);
         $service->submitAnswer($contestant->refresh(), $competition, null, $this->correctOptionAt($contestant, 1));
 
         $this->assertSame(2, $contestant->refresh()->correct_answers);
@@ -186,7 +194,9 @@ class AnswerSubmissionTest extends TestCase
         [$competition, $contestant, $service] = $this->startedContestant(5);
 
         for ($position = 0; $position < 5; $position++) {
+            $this->enterSlot($contestant, $competition, $position);
             $contestant->refresh();
+
             $option = $position % 2 === 0
                 ? $this->correctOptionAt($contestant, $position)
                 : $this->wrongOptionAt($contestant, $position);
@@ -209,12 +219,14 @@ class AnswerSubmissionTest extends TestCase
         [$competition, $contestant, $service] = $this->startedContestant(5);
 
         for ($position = 0; $position < 4; $position++) {
+            $this->enterSlot($contestant, $competition, $position);
             $service->submitAnswer($contestant->refresh(), $competition, null, $this->correctOptionAt($contestant->refresh(), $position));
         }
 
         // Corrupt the running counters just before the finalising answer.
         $contestant->refresh()->forceFill(['correct_answers' => 99, 'answered_questions' => 99])->save();
 
+        $this->enterSlot($contestant, $competition, 4);
         $service->submitAnswer($contestant->refresh(), $competition, null, $this->correctOptionAt($contestant->refresh(), 4));
 
         $contestant->refresh();
@@ -228,6 +240,7 @@ class AnswerSubmissionTest extends TestCase
         [$competition, $contestant, $service] = $this->startedContestant(5);
 
         for ($position = 0; $position < 5; $position++) {
+            $this->enterSlot($contestant, $competition, $position);
             $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
         }
 
@@ -245,10 +258,12 @@ class AnswerSubmissionTest extends TestCase
 
         $service->submitAnswer($contestant, $competition, null, $this->correctOptionAt($contestant, 0));
 
-        // Two windows elapse untouched, then the contestant comes back.
-        $this->travel(85)->seconds();
-
+        // Slots 1 and 2 elapse untouched, then the contestant comes back inside
+        // slot 3 and finishes the paper.
+        $this->enterSlot($contestant, $competition, 3);
         $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
+
+        $this->enterSlot($contestant, $competition, 4);
         $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
 
         $contestant->refresh();
@@ -264,6 +279,7 @@ class AnswerSubmissionTest extends TestCase
         [$competition, $contestant, $service] = $this->startedContestant(5);
 
         for ($position = 0; $position < 5; $position++) {
+            $this->enterSlot($contestant, $competition, $position);
             $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
         }
 

@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Models\Competition;
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -156,14 +156,14 @@ class ErrorContractTest extends TestCase
 
     public function test_competition_not_open_and_competition_closed_are_distinct_codes(): void
     {
-        $competition = $this->makeCompetition(['status' => Competition::STATUS_DRAFT, 'question_count' => 2]);
+        $competition = $this->makeCompetition(['status' => CompetitionSettings::STATUS_DRAFT, 'question_count' => 2]);
         $this->makeQuestions($competition, 2);
         $participation = $this->makeContestant($competition);
 
         $this->actingAs($participation->user)->postJson('/api/exam/start')
             ->assertStatus(403)->assertJsonPath('reason', 'competition_not_open');
 
-        $competition->forceFill(['status' => Competition::STATUS_CLOSED])->save();
+        $competition->forceFill(['status' => CompetitionSettings::STATUS_CLOSED])->save();
 
         $this->actingAs($participation->user)->postJson('/api/exam/start')
             ->assertStatus(403)->assertJsonPath('reason', 'competition_closed');

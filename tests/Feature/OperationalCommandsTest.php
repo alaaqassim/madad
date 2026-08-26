@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Models\Competition;
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use App\Models\User;
 use App\Services\Competition\CredentialGateway;
@@ -25,7 +25,7 @@ class OperationalCommandsTest extends TestCase
 {
     use MadadFixtures, RefreshDatabase;
 
-    private function launchable(string $status = Competition::STATUS_READY): Competition
+    private function launchable(string $status = CompetitionSettings::STATUS_READY): CompetitionSettings
     {
         $competition = $this->makeCompetition([
             'status' => $status,
@@ -58,7 +58,7 @@ class OperationalCommandsTest extends TestCase
             ->assertExitCode(0);
 
         // The whole point: no --set, no change.
-        $this->assertSame(Competition::STATUS_READY, $competition->fresh()->status);
+        $this->assertSame(CompetitionSettings::STATUS_READY, $competition->fresh()->status);
     }
 
     // ── madad:status --set=open ─────────────────────────────────────────────
@@ -68,10 +68,10 @@ class OperationalCommandsTest extends TestCase
         $competition = $this->launchable();
 
         $this->artisan('madad:status', ['--set' => 'open'])
-            ->expectsConfirmation("Change competition #{$competition->id} from ready to open?", 'yes')
+            ->expectsConfirmation('Change the competition from ready to open?', 'yes')
             ->assertExitCode(0);
 
-        $this->assertSame(Competition::STATUS_OPEN, $competition->fresh()->status);
+        $this->assertSame(CompetitionSettings::STATUS_OPEN, $competition->fresh()->status);
     }
 
     public function test_declining_the_confirmation_leaves_the_status_alone(): void
@@ -79,17 +79,17 @@ class OperationalCommandsTest extends TestCase
         $competition = $this->launchable();
 
         $this->artisan('madad:status', ['--set' => 'open'])
-            ->expectsConfirmation("Change competition #{$competition->id} from ready to open?", 'no')
+            ->expectsConfirmation('Change the competition from ready to open?', 'no')
             ->expectsOutputToContain('Cancelled. Nothing was changed.')
             ->assertExitCode(1);
 
-        $this->assertSame(Competition::STATUS_READY, $competition->fresh()->status);
+        $this->assertSame(CompetitionSettings::STATUS_READY, $competition->fresh()->status);
     }
 
     public function test_opening_is_refused_when_the_readiness_check_finds_a_blocker(): void
     {
         // A paper of 75 with only 5 questions in the bank: papers cannot be built.
-        $competition = $this->makeCompetition(['status' => Competition::STATUS_READY, 'question_count' => 75]);
+        $competition = $this->makeCompetition(['status' => CompetitionSettings::STATUS_READY, 'question_count' => 75]);
         $this->makeQuestions($competition, 5);
         $this->makeContestant($competition);
 
@@ -98,7 +98,7 @@ class OperationalCommandsTest extends TestCase
             ->expectsOutputToContain('The competition was NOT opened.')
             ->assertExitCode(1);
 
-        $this->assertSame(Competition::STATUS_READY, $competition->fresh()->status, 'a failed readiness check must not open the portal');
+        $this->assertSame(CompetitionSettings::STATUS_READY, $competition->fresh()->status, 'a failed readiness check must not open the portal');
     }
 
     public function test_opening_proceeds_despite_warnings(): void
@@ -112,79 +112,85 @@ class OperationalCommandsTest extends TestCase
             ->expectsOutputToContain('WARNING')
             ->assertExitCode(0);
 
-        $this->assertSame(Competition::STATUS_OPEN, $competition->fresh()->status);
+        $this->assertSame(CompetitionSettings::STATUS_OPEN, $competition->fresh()->status);
     }
 
     // ── madad:status --set=closed ───────────────────────────────────────────
 
     public function test_closing_states_that_it_ends_the_competition_and_names_who_is_cut_off(): void
     {
-        $competition = $this->launchable(Competition::STATUS_OPEN);
+        $competition = $this->launchable(CompetitionSettings::STATUS_OPEN);
         $this->makeContestant($competition)->forceFill(['exam_status' => CompetitionUser::EXAM_IN_PROGRESS])->save();
         $this->makeContestant($competition)->forceFill(['exam_status' => CompetitionUser::EXAM_IN_PROGRESS])->save();
 
         $this->artisan('madad:status', ['--set' => 'closed'])
             ->expectsOutputToContain('CLOSING ENDS THE COMPETITION.')
             ->expectsOutputToContain('2 contestant(s) are mid-exam right now and will be cut off.')
-            ->expectsConfirmation("Change competition #{$competition->id} from open to closed?", 'yes')
+            ->expectsConfirmation('Change the competition from open to closed?', 'yes')
             ->assertExitCode(0);
 
-        $this->assertSame(Competition::STATUS_CLOSED, $competition->fresh()->status);
+        $this->assertSame(CompetitionSettings::STATUS_CLOSED, $competition->fresh()->status);
     }
 
     public function test_closing_can_be_declined(): void
     {
-        $competition = $this->launchable(Competition::STATUS_OPEN);
+        $competition = $this->launchable(CompetitionSettings::STATUS_OPEN);
 
         $this->artisan('madad:status', ['--set' => 'closed'])
-            ->expectsConfirmation("Change competition #{$competition->id} from open to closed?", 'no')
+            ->expectsConfirmation('Change the competition from open to closed?', 'no')
             ->assertExitCode(1);
 
-        $this->assertSame(Competition::STATUS_OPEN, $competition->fresh()->status);
+        $this->assertSame(CompetitionSettings::STATUS_OPEN, $competition->fresh()->status);
     }
 
     public function test_closing_with_force_does_not_ask(): void
     {
-        $competition = $this->launchable(Competition::STATUS_OPEN);
+        $competition = $this->launchable(CompetitionSettings::STATUS_OPEN);
 
         $this->artisan('madad:status', ['--set' => 'closed', '--force' => true])
             ->expectsOutputToContain('The competition has ended.')
             ->assertExitCode(0);
 
-        $this->assertSame(Competition::STATUS_CLOSED, $competition->fresh()->status);
+        $this->assertSame(CompetitionSettings::STATUS_CLOSED, $competition->fresh()->status);
     }
 
     // ── madad:status — safeguards ───────────────────────────────────────────
 
     public function test_an_unknown_status_is_rejected_without_changing_anything(): void
     {
-        $competition = $this->launchable(Competition::STATUS_OPEN);
+        $competition = $this->launchable(CompetitionSettings::STATUS_OPEN);
 
         $this->artisan('madad:status', ['--set' => 'paused'])
             ->expectsOutputToContain('--set must be one of: draft, ready, open, closed')
             ->assertExitCode(2);
 
-        $this->assertSame(Competition::STATUS_OPEN, $competition->fresh()->status);
+        $this->assertSame(CompetitionSettings::STATUS_OPEN, $competition->fresh()->status);
     }
 
     public function test_setting_the_status_it_already_has_is_a_no_op(): void
     {
-        $competition = $this->launchable(Competition::STATUS_OPEN);
+        $competition = $this->launchable(CompetitionSettings::STATUS_OPEN);
 
         $this->artisan('madad:status', ['--set' => 'open'])
             ->expectsOutputToContain('status is already open; nothing to do.')
             ->assertExitCode(0);
 
-        $this->assertSame(Competition::STATUS_OPEN, $competition->fresh()->status);
+        $this->assertSame(CompetitionSettings::STATUS_OPEN, $competition->fresh()->status);
     }
 
-    public function test_an_unknown_competition_id_is_refused(): void
+    /**
+     * The commands used to take a competition id. Under the singleton there is
+     * nothing to name, so passing one is a usage error rather than a lookup
+     * that fails — which is the stronger guarantee: no shape of this command
+     * can be pointed at the wrong competition.
+     */
+    public function test_the_status_command_takes_no_competition_argument(): void
     {
         $this->launchable();
 
-        $this->artisan('madad:status', ['competition' => 999999])
-            ->expectsOutputToContain('Competition not found.')
-            ->assertExitCode(1);
+        $this->expectException(\InvalidArgumentException::class);
+
+        $this->artisan('madad:status', ['competition' => '999'])->run();
     }
 
     // ── madad:provision ─────────────────────────────────────────────────────

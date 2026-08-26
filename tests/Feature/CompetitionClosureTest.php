@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Models\Competition;
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Support\MadadFixtures;
@@ -46,7 +46,7 @@ class CompetitionClosureTest extends TestCase
         $this->makeQuestions($competition, 3);
         $participation = $this->makeContestant($competition);
 
-        $competition->forceFill(['status' => Competition::STATUS_CLOSED])->save();
+        $competition->forceFill(['status' => CompetitionSettings::STATUS_CLOSED])->save();
 
         $this->actingAs($participation->user)->postJson('/api/exam/start')
             ->assertStatus(403)
@@ -60,7 +60,7 @@ class CompetitionClosureTest extends TestCase
     {
         [$competition, $participation] = $this->midExam();
 
-        $competition->forceFill(['status' => Competition::STATUS_CLOSED])->save();
+        $competition->forceFill(['status' => CompetitionSettings::STATUS_CLOSED])->save();
 
         $this->actingAs($participation->user)->postJson('/api/exam/start')
             ->assertStatus(403)
@@ -75,7 +75,7 @@ class CompetitionClosureTest extends TestCase
     {
         [$competition, $participation] = $this->midExam();
 
-        $competition->forceFill(['status' => Competition::STATUS_CLOSED])->save();
+        $competition->forceFill(['status' => CompetitionSettings::STATUS_CLOSED])->save();
 
         $this->actingAs($participation->user)->getJson('/api/exam/current')
             ->assertStatus(403)
@@ -86,7 +86,7 @@ class CompetitionClosureTest extends TestCase
     {
         [$competition, $participation, $question] = $this->midExam();
 
-        $competition->forceFill(['status' => Competition::STATUS_CLOSED])->save();
+        $competition->forceFill(['status' => CompetitionSettings::STATUS_CLOSED])->save();
 
         $this->actingAs($participation->user)->postJson('/api/exam/answer', [
             'question_id' => $question['question_id'],
@@ -116,7 +116,7 @@ class CompetitionClosureTest extends TestCase
             'answers', 'correct_answers', 'answered_questions', 'exam_status',
         ]));
 
-        $competition->forceFill(['status' => Competition::STATUS_CLOSED])->save();
+        $competition->forceFill(['status' => CompetitionSettings::STATUS_CLOSED])->save();
 
         $this->getJson('/api/exam/current')->assertStatus(403);
         $this->postJson('/api/exam/answer', ['question_id' => $question['question_id'], 'selected_option' => 'B'])
@@ -132,7 +132,7 @@ class CompetitionClosureTest extends TestCase
 
     public function test_the_public_status_endpoint_reports_the_closure_distinctly(): void
     {
-        $competition = $this->makeCompetition(['status' => Competition::STATUS_CLOSED]);
+        $competition = $this->makeCompetition(['status' => CompetitionSettings::STATUS_CLOSED]);
 
         $this->getJson('/api/competition/status')
             ->assertOk()
@@ -142,7 +142,7 @@ class CompetitionClosureTest extends TestCase
             // so the client must not offer "try later".
             ->assertJsonPath('reason', 'competition_closed');
 
-        $competition->forceFill(['status' => Competition::STATUS_READY])->save();
+        $competition->forceFill(['status' => CompetitionSettings::STATUS_READY])->save();
 
         $this->getJson('/api/competition/status')
             ->assertOk()
@@ -163,7 +163,7 @@ class CompetitionClosureTest extends TestCase
             'selected_option' => 'A',
         ])->assertOk();
 
-        $competition->forceFill(['status' => Competition::STATUS_CLOSED])->save();
+        $competition->forceFill(['status' => CompetitionSettings::STATUS_CLOSED])->save();
 
         // Reading a finished result is not participation, and the gate is not
         // consulted for it — a contestant whose exam ended before the portal

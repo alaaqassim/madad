@@ -74,7 +74,7 @@ class ResultsTest extends TestCase
         $this->completedContestant($competition, 55);
         $this->makeContestant($competition); // not_started — must be excluded
 
-        $rows = app(ResultService::class)->completed($competition);
+        $rows = app(ResultService::class)->completed();
 
         $this->assertCount(3, $rows);
         $this->assertSame([70, 55, 40], $rows->pluck('correct_answers')->all());
@@ -129,8 +129,8 @@ class ResultsTest extends TestCase
         }
 
         $service = app(ResultService::class);
-        $first = $service->completed($competition, 3)->pluck('id')->all();
-        $second = $service->completed($competition, 3)->pluck('id')->all();
+        $first = $service->completed(3)->pluck('id')->all();
+        $second = $service->completed(3)->pluck('id')->all();
 
         // Stability is a pagination property, not a ranking rule.
         $this->assertSame($first, $second);

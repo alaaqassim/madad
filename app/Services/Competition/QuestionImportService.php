@@ -2,7 +2,6 @@
 
 namespace App\Services\Competition;
 
-use App\Models\Competition;
 use App\Models\CompetitionQuestion;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -14,7 +13,7 @@ use Illuminate\Support\Facades\Validator;
  * once a spreadsheet package is approved) is a separate concern from the
  * business rules enforced here.
  *
- * Rerunning is safe: (competition_id, question_number) is unique, so a row for
+ * Rerunning is safe: question_number is unique, so a row for
  * an existing number updates it rather than inserting a duplicate. Nothing is
  * skipped silently — every rejected row comes back with the reason.
  */
@@ -33,7 +32,7 @@ class QuestionImportService
     /**
      * @param  iterable<int, array<string, mixed>>  $rows
      */
-    public function import(Competition $competition, iterable $rows): ImportSummary
+    public function import(iterable $rows): ImportSummary
     {
         $summary = new ImportSummary;
         $seenNumbers = [];
@@ -77,9 +76,8 @@ class QuestionImportService
         }
 
         if ($valid !== []) {
-            DB::transaction(function () use ($competition, $valid, $summary) {
+            DB::transaction(function () use ($valid, $summary) {
                 $existing = CompetitionQuestion::query()
-                    ->where('competition_id', $competition->id)
                     ->pluck('id', 'question_number')
                     ->all();
 
@@ -105,7 +103,6 @@ class QuestionImportService
                     }
 
                     CompetitionQuestion::query()->create($attributes + [
-                        'competition_id' => $competition->id,
                         'question_number' => $number,
                     ]);
                     $summary->inserted($number);

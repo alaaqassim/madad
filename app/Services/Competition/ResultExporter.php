@@ -2,7 +2,7 @@
 
 namespace App\Services\Competition;
 
-use App\Models\Competition;
+use App\Models\CompetitionSettings;
 use RuntimeException;
 
 /**
@@ -55,9 +55,9 @@ class ResultExporter
      * @param  int  $limit  0 for every completed contestant
      * @return array<string, mixed> the extraction payload, including the cutoff warning
      */
-    public function export(Competition $competition, string $path, int $limit = 100): array
+    public function export(CompetitionSettings $settings, string $path, int $limit = 100): array
     {
-        $payload = $this->results->topN($competition, $limit);
+        $payload = $this->results->topN($settings, $limit);
 
         $directory = dirname($path);
 
@@ -107,7 +107,8 @@ class ResultExporter
             return $value;
         }
 
-        return in_array($value[0], ['=', '+', '-', '@', '	', ''], true)
+        return in_array($value[0], ['=', '+', '-', '@', '	', '
+'], true)
             ? "'".$value
             : $value;
     }

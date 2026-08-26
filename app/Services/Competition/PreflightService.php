@@ -2,8 +2,8 @@
 
 namespace App\Services\Competition;
 
-use App\Models\Competition;
 use App\Models\CompetitionQuestion;
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -34,21 +34,21 @@ class PreflightService
     /** Databases this application must never be pointed at. */
     private const FORBIDDEN_DATABASES = ['cms_moher', 'cms_moher_exam_engine'];
 
-    public function run(?Competition $competition = null): PreflightReport
+    public function run(?CompetitionSettings $settings = null): PreflightReport
     {
-        $competition ??= Competition::query()->orderBy('id')->first();
+        $settings ??= CompetitionSettings::current();
 
         $checks = array_merge(
             $this->environmentChecks(),
-            $this->competitionChecks($competition),
+            $this->competitionChecks($settings),
         );
 
-        if ($competition !== null) {
+        if ($settings !== null) {
             $checks = array_merge(
                 $checks,
-                $this->questionChecks($competition),
-                $this->contestantChecks($competition),
-                $this->examDataChecks($competition),
+                $this->questionChecks($settings),
+                $this->contestantChecks($settings),
+                $this->examDataChecks($settings),
             );
         }
 
@@ -110,36 +110,108 @@ class PreflightService
     // ─────────────────────────────────────────────────────── competition ────
 
     /** @return list<PreflightCheck> */
-    private function competitionChecks(?Competition $competition): array
+    private function competitionChecks(?CompetitionSettings $settings): array
     {
-        if ($competition === null) {
-            return [PreflightCheck::fail('Competition', 'exists', 'no competition row exists - nothing can run')];
+        if ($settings === null) {
+            return [PreflightCheck::fail('Competition', 'settings', 'no competition_settings row exists - nothing can run')];
         }
 
-        $total = Competition::query()->count();
+        $rows = CompetitionSettings::query()->count();
 
         $checks = [
-            $total === 1
-                ? PreflightCheck::pass('Competition', 'exists', "exactly one competition: #{$competition->id} \"{$competition->name}\"")
-                : PreflightCheck::warning('Competition', 'exists', "{$total} competitions exist; checking #{$competition->id} \"{$competition->name}\""),
-            PreflightCheck::pass('Competition', 'status', $competition->status.' (portal open: '.($competition->isOpen() ? 'yes' : 'no').')'),
-            PreflightCheck::pass('Competition', 'show_result', $competition->show_result ? 'true - contestants see their score' : 'false - contestants do not see their score'),
+            $rows === 1
+                ? PreflightCheck::pass('Competition', 'settings', "exactly one settings row: \"{$settings->name}\"")
+                : PreflightCheck::fail('Competition', 'settings', "{$rows} settings rows exist; there must be exactly one"),
+            PreflightCheck::pass('Competition', 'status', $settings->status.' (portal open: '.($settings->isOpen() ? 'yes' : 'no').')'),
+            PreflightCheck::pass('Competition', 'show_result', $settings->show_result ? 'true - contestants see their score' : 'false - contestants do not see their score'),
         ];
 
-        $checks[] = $competition->question_count > 0
-            ? PreflightCheck::pass('Competition', 'question_count', (string) $competition->question_count)
+        // Read the raw attributes here, not the clamped accessors: the point of
+        // these two checks is to catch a zero that the accessors would hide.
+        $checks[] = (int) $settings->question_count > 0
+            ? PreflightCheck::pass('Competition', 'question_count', (string) $settings->question_count)
             : PreflightCheck::fail('Competition', 'question_count', 'must be greater than zero');
 
-        $checks[] = $competition->seconds_per_question > 0
-            ? PreflightCheck::pass('Competition', 'seconds_per_question', $competition->seconds_per_question.' seconds')
+        $checks[] = (int) $settings->seconds_per_question > 0
+            ? PreflightCheck::pass('Competition', 'seconds_per_question', $settings->seconds_per_question.' seconds')
             : PreflightCheck::fail('Competition', 'seconds_per_question', 'must be greater than zero');
 
-        if ($competition->question_count > 0 && $competition->question_count !== self::EXPECTED_QUESTIONS) {
+        $checks[] = (int) $settings->exam_duration_minutes > 0
+            ? PreflightCheck::pass('Competition', 'exam duration', $settings->exam_duration_minutes.' minutes per contestant')
+            : PreflightCheck::fail('Competition', 'exam duration', 'must be greater than zero');
+
+        if ((int) $settings->question_count > 0 && (int) $settings->question_count !== self::EXPECTED_QUESTIONS) {
             $checks[] = PreflightCheck::warning(
                 'Competition',
                 'expected size',
-                "question_count is {$competition->question_count}; Phase 1 was specified as ".self::EXPECTED_QUESTIONS,
+                "question_count is {$settings->question_count}; Phase 1 was specified as ".self::EXPECTED_QUESTIONS,
             );
+        }
+
+        return array_merge($checks, $this->windowChecks($settings));
+    }
+
+    /**
+     * The global availability window, and how it interacts with the personal
+     * allowance.
+     *
+     * These are two different clocks and the interesting cases are where they
+     * disagree: a window shorter than one contestant's allowance means nobody
+     * who starts late gets a full paper, and a window that has already passed
+     * means the portal is terminal no matter what `status` says.
+     *
+     * @return list<PreflightCheck>
+     */
+    private function windowChecks(CompetitionSettings $settings): array
+    {
+        $now = now();
+        $checks = [];
+
+        $window = match (true) {
+            $settings->starts_at === null && $settings->ends_at === null => 'no window set - status alone governs access',
+            $settings->starts_at === null => 'until '.$settings->ends_at->toDateTimeString(),
+            $settings->ends_at === null => 'from '.$settings->starts_at->toDateTimeString(),
+            default => $settings->starts_at->toDateTimeString().' to '.$settings->ends_at->toDateTimeString(),
+        };
+
+        $checks[] = $settings->starts_at !== null && $settings->ends_at !== null
+            && $settings->ends_at->lessThanOrEqualTo($settings->starts_at)
+                ? PreflightCheck::fail('Competition', 'availability window', "ends_at is not after starts_at ({$window}) - the portal could never open")
+                : PreflightCheck::pass('Competition', 'availability window', $window);
+
+        if ($settings->windowHasEnded($now)) {
+            $checks[] = PreflightCheck::fail(
+                'Competition',
+                'window state',
+                'the availability window has already passed - no contestant can start or resume',
+            );
+        } elseif (! $settings->windowHasOpened($now)) {
+            $checks[] = PreflightCheck::warning(
+                'Competition',
+                'window state',
+                'the availability window has not opened yet - contestants will be refused until '.$settings->starts_at->toDateTimeString(),
+            );
+        } else {
+            $checks[] = PreflightCheck::pass('Competition', 'window state', 'the availability window is open now');
+        }
+
+        // A full paper needs question_count x seconds_per_question of wall
+        // clock. If the personal allowance is shorter than that, the last
+        // questions are unreachable for everyone, which an operator should be
+        // told before the doctor discovers it mid-competition.
+        $paperSeconds = $settings->questionCount() * $settings->secondsPerQuestion();
+        $allowance = $settings->examDurationSeconds();
+
+        $checks[] = $allowance >= $paperSeconds
+            ? PreflightCheck::pass('Competition', 'allowance vs paper', "{$allowance}s allowance covers a {$paperSeconds}s paper")
+            : PreflightCheck::warning('Competition', 'allowance vs paper', "the {$allowance}s allowance is shorter than the {$paperSeconds}s paper - the last questions are unreachable");
+
+        if ($settings->ends_at !== null && ! $settings->windowHasEnded($now)) {
+            $remaining = $settings->secondsAvailableFrom($now);
+
+            $checks[] = $remaining >= $paperSeconds
+                ? PreflightCheck::pass('Competition', 'time left in window', "{$remaining}s remain - enough for a full paper")
+                : PreflightCheck::warning('Competition', 'time left in window', "{$remaining}s remain - a contestant starting now could not finish a {$paperSeconds}s paper");
         }
 
         return $checks;
@@ -148,19 +220,19 @@ class PreflightService
     // ───────────────────────────────────────────────────────── questions ────
 
     /** @return list<PreflightCheck> */
-    private function questionChecks(Competition $competition): array
+    private function questionChecks(CompetitionSettings $settings): array
     {
-        $questions = fn () => DB::table('competition_questions')->where('competition_id', $competition->id);
+        $questions = fn () => DB::table('competition_questions');
 
         $total = $questions()->count();
 
         $checks = [
-            $total >= $competition->question_count
-                ? PreflightCheck::pass('Questions', 'bank size', "{$total} questions for a paper of {$competition->question_count}")
-                : PreflightCheck::fail('Questions', 'bank size', "only {$total} questions for a paper of {$competition->question_count} - papers cannot be built"),
+            $total >= $settings->questionCount()
+                ? PreflightCheck::pass('Questions', 'bank size', "{$total} questions for a paper of {$settings->questionCount()}")
+                : PreflightCheck::fail('Questions', 'bank size', "only {$total} questions for a paper of {$settings->questionCount()} - papers cannot be built"),
         ];
 
-        if ($total >= $competition->question_count && $total < self::EXPECTED_QUESTIONS) {
+        if ($total >= $settings->questionCount() && $total < self::EXPECTED_QUESTIONS) {
             $checks[] = PreflightCheck::warning('Questions', 'expected bank size', "{$total} questions; Phase 1 was specified as at least ".self::EXPECTED_QUESTIONS);
         }
 
@@ -213,9 +285,9 @@ class PreflightService
     // ─────────────────────────────────────────────────────── contestants ────
 
     /** @return list<PreflightCheck> */
-    private function contestantChecks(Competition $competition): array
+    private function contestantChecks(CompetitionSettings $settings): array
     {
-        $base = fn () => DB::table('competition_users')->where('competition_id', $competition->id);
+        $base = fn () => DB::table('competition_users');
 
         $total = $base()->count();
 
@@ -271,7 +343,6 @@ class PreflightService
 
         $orphanUsers = DB::table('competition_users as cu')
             ->leftJoin('users as u', 'u.id', '=', 'cu.user_id')
-            ->where('cu.competition_id', $competition->id)
             ->whereNotNull('cu.user_id')
             ->whereNull('u.id')
             ->count();
@@ -308,12 +379,13 @@ class PreflightService
      *
      * @return list<PreflightCheck>
      */
-    private function examDataChecks(Competition $competition): array
+    private function examDataChecks(CompetitionSettings $settings): array
     {
-        $count = (int) $competition->question_count;
+        $count = $settings->questionCount();
+        $seconds = $settings->secondsPerQuestion();
+        $now = now()->format('Y-m-d H:i:s');
 
         $bank = DB::table('competition_questions')
-            ->where('competition_id', $competition->id)
             ->pluck('correct_option', 'id')
             ->all();
 
@@ -326,25 +398,24 @@ class PreflightService
         $badAnswerChars = 0;
         $indexOutOfRange = 0;
         $answeredAhead = 0;
-        $missingTimeline = 0;
-        $arrivalBeforeStart = 0;
+        $missingStartedAt = 0;
+        $aheadOfTheClock = 0;
         $notStartedWithProgress = 0;
         $completedNotAtEnd = 0;
         $aggregateMismatch = 0;
 
         DB::table('competition_users')
-            ->where('competition_id', $competition->id)
             ->orderBy('id')
             ->select([
                 'id', 'exam_status', 'started_at', 'completed_at', 'question_order',
-                'current_question', 'current_question_started_at', 'answers',
+                'current_question', 'answers',
                 'correct_answers', 'answered_questions',
             ])
             ->chunk(500, function ($rows) use (
-                $count, $bank,
+                $count, $bank, $seconds, $now,
                 &$withOrder, &$startedWithoutOrder, &$wrongLength, &$duplicateIds, &$foreignIds,
                 &$badAnswerLength, &$badAnswerChars, &$indexOutOfRange, &$answeredAhead,
-                &$missingTimeline, &$arrivalBeforeStart, &$notStartedWithProgress,
+                &$missingStartedAt, &$aheadOfTheClock, &$notStartedWithProgress,
                 &$completedNotAtEnd, &$aggregateMismatch,
             ): void {
                 foreach ($rows as $row) {
@@ -395,13 +466,22 @@ class PreflightService
                         $answeredAhead++;
                     }
 
-                    if ($started && ($row->started_at === null || $row->current_question_started_at === null)) {
-                        $missingTimeline++;
+                    if ($started && $row->started_at === null) {
+                        $missingStartedAt++;
                     }
 
-                    if ($row->started_at !== null && $row->current_question_started_at !== null
-                        && $row->current_question_started_at < $row->started_at) {
-                        $arrivalBeforeStart++;
+                    // Invariant 4 of the engine: the index reaches time_index by
+                    // reconciliation and time_index + 1 by answering the live
+                    // slot, so it can never be further ahead than that. A row
+                    // that is means something wrote a position the clock never
+                    // reached.
+                    if ($row->exam_status === CompetitionUser::EXAM_IN_PROGRESS && $row->started_at !== null) {
+                        $elapsed = max(0, strtotime((string) $now) - strtotime((string) $row->started_at));
+                        $timeIndex = intdiv($elapsed, $seconds);
+
+                        if ($index > $timeIndex + 1) {
+                            $aheadOfTheClock++;
+                        }
                     }
 
                     if (! $started && ($index > 0 || preg_match('/[ABCD]/', $answers) === 1)) {
@@ -489,15 +569,15 @@ class PreflightService
             ),
 
             PreflightCheck::forCount(
-                'Exam data', 'timeline anchors', $missingTimeline,
-                'started contestants are missing started_at or current_question_started_at',
-                'every started contestant has both timeline anchors',
+                'Exam data', 'timeline anchor', $missingStartedAt,
+                'started contestants have no started_at - their timeline cannot be derived',
+                'every started contestant has a started_at',
             ),
 
             PreflightCheck::forCount(
-                'Exam data', 'arrival ordering', $arrivalBeforeStart,
-                'contestants arrived at their position before the exam started',
-                'no arrival predates the start of the exam',
+                'Exam data', 'position vs clock', $aheadOfTheClock,
+                'contestants sit further ahead than the fixed timeline allows',
+                'no contestant is ahead of the position the clock permits',
             ),
 
             PreflightCheck::forCount(
@@ -521,7 +601,6 @@ class PreflightService
             PreflightCheck::forCount(
                 'Exam data', 'completion timestamps',
                 DB::table('competition_users')
-                    ->where('competition_id', $competition->id)
                     ->where('exam_status', CompetitionUser::EXAM_COMPLETED)
                     ->whereNull('completed_at')
                     ->count(),

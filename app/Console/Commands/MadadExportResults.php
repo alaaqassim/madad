@@ -2,7 +2,7 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Competition;
+use App\Models\CompetitionSettings;
 use App\Services\Competition\ResultExporter;
 use App\Services\Competition\ResultService;
 use Illuminate\Console\Command;
@@ -21,7 +21,6 @@ use Throwable;
 class MadadExportResults extends Command
 {
     protected $signature = 'madad:results
-                            {competition? : Competition id. Omit when there is only one}
                             {--top=100 : How many contestants to return. 0 = every completed contestant}
                             {--export= : Write a UTF-8 (BOM) CSV to this path — the file the doctor opens in Excel}
                             {--json= : Write the raw payload to this path as JSON}';
@@ -30,9 +29,11 @@ class MadadExportResults extends Command
 
     public function handle(ResultService $results, ResultExporter $exporter): int
     {
-        $competition = $this->resolveCompetition();
+        $competition = CompetitionSettings::current();
 
         if ($competition === null) {
+            $this->error('No competition_settings row exists. Run the migrations first.');
+
             return self::FAILURE;
         }
 
@@ -83,33 +84,5 @@ class MadadExportResults extends Command
         }
 
         return self::SUCCESS;
-    }
-
-    /** Phase 1 runs one competition; naming it is optional convenience. */
-    private function resolveCompetition(): ?Competition
-    {
-        $id = $this->argument('competition');
-
-        if ($id !== null) {
-            $competition = Competition::query()->find($id);
-
-            if ($competition === null) {
-                $this->error('Competition not found.');
-            }
-
-            return $competition;
-        }
-
-        $competitions = Competition::query()->orderBy('id')->get();
-
-        if ($competitions->count() !== 1) {
-            $this->error($competitions->isEmpty()
-                ? 'No competition exists.'
-                : 'More than one competition exists — name the one you mean.');
-
-            return null;
-        }
-
-        return $competitions->first();
     }
 }

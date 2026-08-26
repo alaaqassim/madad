@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use App\Exceptions\ExamException;
-use App\Models\Competition;
+use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use App\Services\Competition\CompetitionExamService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -40,7 +40,7 @@ class ConcurrencyTest extends TestCase
         return app(CompetitionExamService::class);
     }
 
-    /** @return array{0: Competition, 1: CompetitionUser} */
+    /** @return array{0: CompetitionSettings, 1: CompetitionUser} */
     private function contestant(int $questions = 5): array
     {
         $competition = $this->makeCompetition(['question_count' => $questions, 'seconds_per_question' => 40]);
@@ -175,7 +175,12 @@ class ConcurrencyTest extends TestCase
 
     // ── 3. simultaneous reads ───────────────────────────────────────────────
 
-    public function test_simultaneous_refreshes_fix_the_arrival_exactly_once(): void
+    /**
+     * Reading cannot move a deadline, because there is no deadline to move.
+     * The slot boundaries are arithmetic on started_at, so two readers agree by
+     * construction rather than by one of them winning a write.
+     */
+    public function test_simultaneous_refreshes_report_the_same_fixed_slot(): void
     {
         [$competition, $participation] = $this->contestant(5);
         $service = $this->service();
@@ -183,7 +188,7 @@ class ConcurrencyTest extends TestCase
         $service->startOrResume($participation->user, $competition);
         $participation->refresh();
 
-        $arrivedAt = $participation->current_question_started_at;
+        $startedAt = $participation->started_at->copy();
 
         $this->travel(5)->seconds();
 
@@ -191,7 +196,9 @@ class ConcurrencyTest extends TestCase
         $second = $service->currentQuestion($participation->fresh(), $competition);
 
         $this->assertSame($first['expires_at'], $second['expires_at']);
-        $this->assertEquals($arrivedAt, $participation->refresh()->current_question_started_at, 'the window was reopened');
+        $this->assertSame($first['opened_at'], $second['opened_at']);
+        $this->assertSame($startedAt->toIso8601String(), $first['opened_at'], 'the window was reopened at the read');
+        $this->assertEquals($startedAt, $participation->refresh()->started_at, 'the anchor moved');
     }
 
     // ── 4. the portal closing underneath a request ──────────────────────────
@@ -211,7 +218,7 @@ class ConcurrencyTest extends TestCase
             'answered_questions', 'exam_status',
         ]));
 
-        $competition->forceFill(['status' => Competition::STATUS_CLOSED])->save();
+        $competition->forceFill(['status' => CompetitionSettings::STATUS_CLOSED])->save();
 
         foreach ([
             fn () => $service->currentQuestion($participation->fresh(), $competition),
@@ -244,6 +251,7 @@ class ConcurrencyTest extends TestCase
         $service->startOrResume($participation->user, $competition);
 
         for ($position = 0; $position < 3; $position++) {
+            $this->enterSlot($participation, $competition, $position);
             $service->submitAnswer($participation->refresh(), $competition, null, 'A');
         }
 
@@ -276,6 +284,7 @@ class ConcurrencyTest extends TestCase
         $stale = $participation->fresh();
 
         for ($position = 0; $position < 3; $position++) {
+            $this->enterSlot($participation, $competition, $position);
             $service->submitAnswer($participation->refresh(), $competition, null, 'A');
         }
 
@@ -303,8 +312,11 @@ class ConcurrencyTest extends TestCase
         $first->refresh();
         $second->refresh();
 
-        // Interleave their answers, as two simultaneous contestants would.
+        // Interleave their answers, as two simultaneous contestants would. They
+        // began within the same instant, so one enterSlot serves both.
         for ($position = 0; $position < 4; $position++) {
+            $this->enterSlot($first, $competition, $position);
+
             $service->submitAnswer($first->refresh(), $competition, null, $this->correctOptionAt($first->refresh(), $position));
             $service->submitAnswer($second->refresh(), $competition, null, $this->wrongOptionAt($second->refresh(), $position));
         }

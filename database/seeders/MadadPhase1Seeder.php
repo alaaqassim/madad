@@ -46,6 +46,9 @@ class MadadPhase1Seeder extends Seeder
 
     private const COMPETITION_NAME = 'Madad Phase 1';
 
+    /** The contestant's personal allowance, in minutes. */
+    private const EXAM_DURATION_MINUTES = 60;
+
     /** Contestants 1..N. Boundaries are cumulative and must stay consistent. */
     private const ACCOUNT_CREATED_THROUGH = 900;   // 901..970 pending, 971..1000 failed
 
@@ -75,11 +78,11 @@ class MadadPhase1Seeder extends Seeder
 
         $started = microtime(true);
 
-        $competitionId = $this->seedCompetition();
-        $questionIds = $this->seedQuestions($competitionId);
+        $this->seedSettings();
+        $questionIds = $this->seedQuestions();
         $plan = $this->buildContestantPlan();
         $userIdByIndex = $this->seedUsers($plan);
-        $competitionUserIdByIndex = $this->seedCompetitionUsers($competitionId, $plan, $userIdByIndex);
+        $competitionUserIdByIndex = $this->seedCompetitionUsers($plan, $userIdByIndex);
         $this->seedExamState($plan, $questionIds, $competitionUserIdByIndex);
 
         $this->command?->info(sprintf(
@@ -124,8 +127,9 @@ class MadadPhase1Seeder extends Seeder
      */
     private function guardAlreadySeeded(): void
     {
+        // competition_settings is deliberately NOT in this list: the migration
+        // creates its one and only row, so finding it occupied is correct.
         $counts = [
-            'competitions' => DB::table('competitions')->count(),
             'competition_questions' => DB::table('competition_questions')->count(),
             'competition_users' => DB::table('competition_users')->count(),
         ];
@@ -148,11 +152,18 @@ class MadadPhase1Seeder extends Seeder
 
     // ──────────────────────────────────────────────────── competition ──────
 
-    private function seedCompetition(): int
+    /**
+     * The settings singleton already exists - the migration created it - so this
+     * UPDATES it rather than inserting. An insert would be refused by the
+     * database, which is the whole point of the singleton.
+     *
+     * The availability window is deliberately wide enough to contain both the
+     * historical completed sittings and the live in-progress ones, so a
+     * developer logging in as either kind is not refused by the gate.
+     */
+    private function seedSettings(): void
     {
-        $now = $this->now();
-
-        return (int) DB::table('competitions')->insertGetId([
+        DB::table('competition_settings')->where('id', 1)->update([
             'name' => self::COMPETITION_NAME,
             // Deliberately 'ready', not 'open': the portal stays shut until a
             // human opens it, so testing controls the gate explicitly.
@@ -160,15 +171,19 @@ class MadadPhase1Seeder extends Seeder
             'show_result' => false,
             'question_count' => self::QUESTIONS,
             'seconds_per_question' => self::SECONDS_PER_QUESTION,
-            'starts_at' => $this->examDay()->format('Y-m-d H:i:s'),
-            'ends_at' => $this->examDay()->addHours(6)->format('Y-m-d H:i:s'),
-            'created_at' => $now,
-            'updated_at' => $now,
+            'exam_duration_minutes' => self::EXAM_DURATION_MINUTES,
+            // Wide enough to contain BOTH the historical completed sittings on
+            // the fixed exam day AND the live in-progress rows anchored to now.
+            // A window that opened in the future would refuse every fixture
+            // contestant until that date, which is not a useful dev database.
+            'starts_at' => $this->examDay()->copy()->subYear()->format('Y-m-d H:i:s'),
+            'ends_at' => $this->examDay()->copy()->addYear()->format('Y-m-d H:i:s'),
+            'updated_at' => $this->now(),
         ]);
     }
 
     /** @return list<int> question ids ordered by question_number */
-    private function seedQuestions(int $competitionId): array
+    private function seedQuestions(): array
     {
         $now = $this->now();
         $bank = require database_path('seeders/data/madad_phase1_questions.php');
@@ -176,7 +191,6 @@ class MadadPhase1Seeder extends Seeder
         $rows = [];
         foreach ($bank as [$number, $text, $a, $b, $c, $d, $correct]) {
             $rows[] = [
-                'competition_id' => $competitionId,
                 'question_number' => $number,
                 'question_text' => $text,
                 'option_a' => $a,
@@ -192,7 +206,6 @@ class MadadPhase1Seeder extends Seeder
         DB::table('competition_questions')->insert($rows);
 
         return DB::table('competition_questions')
-            ->where('competition_id', $competitionId)
             ->orderBy('question_number')
             ->pluck('id')
             ->all();
@@ -307,7 +320,7 @@ class MadadPhase1Seeder extends Seeder
      * @param  array<int, int>  $userIdByIndex
      * @return array<int, int> contestant index => competition_users.id
      */
-    private function seedCompetitionUsers(int $competitionId, array $plan, array $userIdByIndex): array
+    private function seedCompetitionUsers(array $plan, array $userIdByIndex): array
     {
         $now = $this->now();
         $generatedAt = $this->examDay()->subDays(3)->setTime(10, 0);
@@ -327,7 +340,6 @@ class MadadPhase1Seeder extends Seeder
                 : null;
 
             $buffer[] = [
-                'competition_id' => $competitionId,
                 'user_id' => $userIdByIndex[$i] ?? null,
                 'contestant_name' => $entry['name'],
                 'contestant_email' => $entry['email'],
@@ -368,7 +380,6 @@ class MadadPhase1Seeder extends Seeder
         }
 
         $idByEmail = DB::table('competition_users')
-            ->where('competition_id', $competitionId)
             ->pluck('id', 'contestant_email')
             ->all();
 
@@ -384,10 +395,10 @@ class MadadPhase1Seeder extends Seeder
 
     /**
      * Every contestant gets their own randomised question order and a position
-     * in it. The entire exam state is four values on the participation row —
-     * question_order, current_question, current_question_started_at and the
-     * positional answers string — and the aggregates are derived from the
-     * answers actually written, never guessed.
+     * in it. The entire exam state is three values on the participation row —
+     * question_order, current_question and the positional answers string, all
+     * anchored by started_at — and the aggregates are derived from the answers
+     * actually written, never guessed.
      *
      * @param  list<array<string, mixed>>  $plan
      * @param  list<int>  $questionIds
@@ -414,7 +425,6 @@ class MadadPhase1Seeder extends Seeder
                 'question_order' => json_encode($order),
                 'answers' => $state['answers'],
                 'current_question' => $state['current_question'],
-                'current_question_started_at' => $state['current_question_started_at'],
                 'started_at' => $state['started_at'],
                 'completed_at' => $state['completed_at'],
                 'correct_answers' => $state['correct_answers'],
@@ -448,7 +458,6 @@ class MadadPhase1Seeder extends Seeder
             return [
                 'answers' => $blank,
                 'current_question' => 0,
-                'current_question_started_at' => null,
                 'started_at' => null,
                 'completed_at' => null,
                 'correct_answers' => 0,
@@ -501,7 +510,6 @@ class MadadPhase1Seeder extends Seeder
             return [
                 'answers' => $answers,
                 'current_question' => self::QUESTIONS,
-                'current_question_started_at' => $this->ms($finishedAt),
                 'started_at' => $this->ms($startedAt),
                 'completed_at' => $this->ms($finishedAt),
                 'correct_answers' => $correctAnswers,
@@ -509,15 +517,15 @@ class MadadPhase1Seeder extends Seeder
             ];
         }
 
-        // Live: they reached the current position a few seconds ago, and
-        // started_at is placed so the fixed timeline agrees with that position.
-        $arrivedAt = Carbon::now()->subSeconds(mt_rand(2, $window - 5));
-        $startedAt = $arrivedAt->copy()->subSeconds($position * $window);
+        // Live: started_at is placed so that floor((now - started_at) / window)
+        // lands on exactly $position, a few seconds into that slot. There is no
+        // arrival to record - the slot boundaries follow from started_at alone.
+        $intoSlot = mt_rand(2, $window - 5);
+        $startedAt = Carbon::now()->subSeconds($position * $window + $intoSlot);
 
         return [
             'answers' => $answers,
             'current_question' => $position,
-            'current_question_started_at' => $this->ms($arrivedAt),
             'started_at' => $this->ms($startedAt),
             'completed_at' => null,
             'correct_answers' => $correctAnswers,

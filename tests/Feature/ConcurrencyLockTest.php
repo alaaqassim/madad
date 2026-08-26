@@ -93,10 +93,12 @@ class ConcurrencyLockTest extends TestCase
 
         DB::statement('SET FOREIGN_KEY_CHECKS=0');
 
+        // competition_settings is deliberately absent: it is a singleton the
+        // migration created, every test overwrites it through makeCompetition(),
+        // and truncating it would leave the next test with no settings at all.
         foreach ([
             'competition_users',
             'competition_questions',
-            'competitions',
             'users',
         ] as $table) {
             DB::table($table)->truncate();
