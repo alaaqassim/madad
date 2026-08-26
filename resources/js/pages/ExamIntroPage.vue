@@ -63,7 +63,6 @@ const retryable = computed(() => ['network_error', 'server_error', 'unknown'].in
                 <li v-if="totalQuestions">{{ copy.status.ruleQuestions(totalQuestions) }}</li>
                 <li v-if="secondsPerQuestion">{{ copy.status.ruleSeconds(secondsPerQuestion) }}</li>
                 <li>{{ copy.status.ruleNoBack }}</li>
-                <li>{{ copy.status.ruleTimer }}</li>
             </ul>
         </MadadCard>
 

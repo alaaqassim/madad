@@ -14,7 +14,7 @@ export const copy = {
     login: {
         eyebrow: 'الدخول',
         title: 'ادخل إلى منصّة المسابقة',
-        subtitle: 'استخدم البريد الإلكتروني وكلمة المرور اللذين وصلاك في رسالة التسجيل.',
+        subtitle: 'أدخل معلومات التسجيل المرسلة بالبريد الإلكتروني.',
         section: 'بيانات الدخول',
         email: 'البريد الإلكتروني',
         emailPlaceholder: 'name@example.com',
@@ -43,7 +43,6 @@ export const copy = {
         ruleQuestions: (total) => `عدد الأسئلة: ${total}`,
         ruleSeconds: (seconds) => `الوقت لكل سؤال: ${seconds} ثانية`,
         ruleNoBack: 'لا يمكن الرجوع إلى سؤال سابق بعد تجاوزه.',
-        ruleTimer: 'الوقت يُحتسب على الخادم، ولا يتوقّف بتحديث الصفحة.',
         start: 'ابدأ المسابقة',
         resume: 'أكمل المسابقة',
         starting: 'جارٍ التحضير…',
