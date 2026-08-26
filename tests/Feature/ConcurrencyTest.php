@@ -4,9 +4,7 @@ namespace Tests\Feature;
 
 use App\Exceptions\ExamException;
 use App\Models\Competition;
-use App\Models\CompetitionQuestion;
 use App\Models\CompetitionUser;
-use App\Models\CompetitionUserQuestion;
 use App\Services\Competition\CompetitionExamService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Support\MadadFixtures;
@@ -22,7 +20,7 @@ use Tests\TestCase;
  * stated here rather than papered over.
  *
  * What it does instead is reproduce the state each racing request would
- * actually be holding — a MODEL INSTANCE READ BEFORE THE OTHER REQUEST WROTE —
+ * actually be holding — A MODEL INSTANCE READ BEFORE THE OTHER REQUEST WROTE —
  * and then let the engine resolve it. That is the real hazard: the engine's
  * defence is that every state change re-reads the row under `lockForUpdate`
  * inside a transaction and decides from that, never from the instance it was
@@ -53,24 +51,24 @@ class ConcurrencyTest extends TestCase
 
     // ── 1. two simultaneous start requests ──────────────────────────────────
 
-    public function test_two_simultaneous_starts_build_exactly_one_paper(): void
+    public function test_two_simultaneous_starts_persist_exactly_one_order(): void
     {
         [$competition, $participation] = $this->contestant(5);
         $service = $this->service();
 
-        // Both "requests" hold the participation as it was BEFORE either ran.
-        $requestA = $participation->fresh();
-        $requestB = $participation->fresh();
+        // Two requests, each holding the row as it was before either wrote.
+        $first = $participation->fresh();
+        $second = $participation->fresh();
 
-        $service->startOrResume($requestA->user, $competition);
-        $service->startOrResume($requestB->user, $competition);
+        $service->startOrResume($first->user, $competition);
+        $service->startOrResume($second->user, $competition);
 
-        $rows = CompetitionUserQuestion::query()->where('competition_user_id', $participation->id)->get();
+        $participation->refresh();
 
-        $this->assertCount(5, $rows, 'a second start must not build a second paper');
-        $this->assertSame([1, 2, 3, 4, 5], $rows->pluck('sequence')->sort()->values()->all());
-        $this->assertSame(5, $rows->pluck('competition_question_id')->unique()->count());
-        $this->assertSame(CompetitionUser::EXAM_IN_PROGRESS, $participation->fresh()->exam_status);
+        $this->assertCount(5, $participation->order());
+        $this->assertSame($participation->order(), array_values(array_unique($participation->order())));
+        $this->assertSame(0, $participation->current_question);
+        $this->assertSame(CompetitionUser::EXAM_IN_PROGRESS, $participation->exam_status);
     }
 
     public function test_a_second_start_does_not_reshuffle_or_restart(): void
@@ -79,258 +77,245 @@ class ConcurrencyTest extends TestCase
         $service = $this->service();
 
         $service->startOrResume($participation->user, $competition);
-        $order = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->orderBy('sequence')
-            ->pluck('competition_question_id')->all();
-        $startedAt = $participation->fresh()->started_at;
+        $participation->refresh();
 
-        $this->travel(30)->seconds();
-        $service->startOrResume($participation->fresh()->user, $competition);
+        $order = $participation->order();
+        $startedAt = $participation->started_at;
 
-        $after = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->orderBy('sequence')
-            ->pluck('competition_question_id')->all();
+        $this->travel(3)->seconds();
+        $service->startOrResume($participation->user, $competition);
 
-        $this->assertSame($order, $after, 'the persisted order must survive a second start');
-        $this->assertEquals($startedAt, $participation->fresh()->started_at, 'started_at must be written once');
+        $participation->refresh();
+
+        $this->assertSame($order, $participation->order(), 'the paper was reshuffled');
+        $this->assertEquals($startedAt, $participation->started_at, 'the clock was restarted');
     }
 
-    // ── 2. two answer submissions for the same question ─────────────────────
+    // ── 2. two submissions for the same position ────────────────────────────
 
-    public function test_two_submissions_for_the_same_question_resolve_to_one_answer(): void
+    public function test_two_submissions_for_the_same_position_resolve_to_one_answer(): void
     {
         [$competition, $participation] = $this->contestant(5);
         $service = $this->service();
+
         $service->startOrResume($participation->user, $competition);
-        $question = $service->currentQuestion($participation->fresh());
+        $participation->refresh();
 
-        // Two requests that both read the participation while the question was
-        // still live and unanswered.
-        $requestA = $participation->fresh();
-        $requestB = $participation->fresh();
+        $questionId = $participation->questionIdAt(0);
 
-        $first = $service->submitAnswer($requestA, $question['question_id'], 'A');
-        $this->assertTrue($first['accepted']);
+        // Both requests believe they are answering position 0.
+        $stale = $participation->fresh();
+
+        $service->submitAnswer($participation, $competition, $questionId, 'A');
 
         try {
-            $service->submitAnswer($requestB, $question['question_id'], 'B');
-            $this->fail('the second submission must not be accepted');
+            $service->submitAnswer($stale, $competition, $questionId, 'B');
+            $this->fail('the second submission was accepted');
         } catch (ExamException $e) {
             $this->assertSame('question_not_available', $e->reason);
         }
 
-        $row = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->where('sequence', 1)->first();
+        $participation->refresh();
 
-        // The first answer stands; the loser of the race changes nothing.
-        $this->assertSame('A', $row->selected_option);
-        $this->assertNotNull($row->answered_at);
-        $this->assertFalse($row->timed_out);
-        $this->assertSame(1, CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->whereNotNull('answered_at')->count());
+        $this->assertSame('A', $participation->answerAt(0), 'the loser of the race overwrote the winner');
+        $this->assertSame(1, $participation->current_question, 'the index advanced twice');
+        $this->assertSame(1, $participation->answered_questions);
     }
 
-    // ── 3. answer versus timeout at the deadline ────────────────────────────
-
-    public function test_an_answer_arriving_after_the_deadline_loses_to_the_timeout(): void
+    public function test_an_answer_arriving_after_the_window_loses_to_the_clock(): void
     {
-        [$competition, $participation] = $this->contestant(3);
+        [$competition, $participation] = $this->contestant(5);
         $service = $this->service();
-        $service->startOrResume($participation->user, $competition);
-        $question = $service->currentQuestion($participation->fresh());
 
-        // The request was in flight as the deadline passed.
-        $stale = $participation->fresh();
+        $service->startOrResume($participation->user, $competition);
+        $participation->refresh();
+
+        $inFlight = $participation->fresh();
+        $questionId = $participation->questionIdAt(0);
+
+        // The request was composed inside the window and lands outside it.
         $this->travel(41)->seconds();
 
         try {
-            $service->submitAnswer($stale, $question['question_id'], 'A');
-            $this->fail('an answer past the deadline must not be accepted');
+            $service->submitAnswer($inFlight, $competition, $questionId, 'A');
+            $this->fail('a late answer was accepted');
         } catch (ExamException $e) {
             $this->assertSame('question_expired', $e->reason);
         }
 
-        $row = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->where('sequence', 1)->first();
+        $participation->refresh();
 
-        // The timeout must have been COMMITTED even though the call threw —
-        // otherwise the question would still be live for another late attempt.
-        $this->assertTrue($row->timed_out);
-        $this->assertNull($row->selected_option);
-        $this->assertFalse($row->is_correct);
+        $this->assertNull($participation->answerAt(0));
+        $this->assertSame(0, $participation->answered_questions);
+        $this->assertGreaterThanOrEqual(1, $participation->current_question);
     }
 
-    public function test_an_answer_on_the_last_millisecond_is_accepted_and_cannot_then_time_out(): void
-    {
-        [$competition, $participation] = $this->contestant(3);
-        $service = $this->service();
-        $service->startOrResume($participation->user, $competition);
-        $question = $service->currentQuestion($participation->fresh());
-
-        $row = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->where('sequence', 1)->first();
-
-        // Sit exactly on the deadline: inside the window, by one millisecond.
-        $this->travelTo($row->expires_at);
-
-        $outcome = $service->submitAnswer($participation->fresh(), $question['question_id'], 'A');
-        $this->assertTrue($outcome['accepted']);
-
-        // A sweep arriving immediately afterwards must not overwrite it.
-        $this->travel(5)->seconds();
-        $service->currentQuestion($participation->fresh());
-
-        $row->refresh();
-        $this->assertSame('A', $row->selected_option);
-        $this->assertFalse($row->timed_out, 'an accepted answer must never be reclassified as a timeout');
-    }
-
-    // ── 4. refresh while the question opens ─────────────────────────────────
-
-    public function test_simultaneous_refreshes_open_the_question_exactly_once(): void
-    {
-        [$competition, $participation] = $this->contestant(4);
-        $service = $this->service();
-        $service->startOrResume($participation->user, $competition);
-
-        // Three "requests" that all believe the question has never been served.
-        $a = $service->currentQuestion($participation->fresh());
-        $b = $service->currentQuestion($participation->fresh());
-        $c = $service->currentQuestion($participation->fresh());
-
-        $this->assertSame($a['question_id'], $b['question_id']);
-        $this->assertSame($b['question_id'], $c['question_id']);
-        $this->assertSame($a['opened_at'], $c['opened_at'], 'opened_at is written once');
-        $this->assertSame($a['expires_at'], $c['expires_at'], 'a refresh must not extend the deadline');
-
-        $this->assertSame(1, CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)
-            ->whereNotNull('opened_at')->count(), 'only the current question may be opened');
-    }
-
-    // ── 5. closing the competition while a contestant is active ─────────────
-
-    public function test_closing_mid_flight_stops_the_contestant_without_corrupting_the_paper(): void
+    public function test_an_answer_on_the_last_second_is_accepted_and_cannot_then_expire(): void
     {
         [$competition, $participation] = $this->contestant(5);
         $service = $this->service();
-        $service->startOrResume($participation->user, $competition);
-        $question = $service->currentQuestion($participation->fresh());
 
-        // The contestant's request was already in flight when the operator
-        // closed the competition.
-        $inFlight = $participation->fresh();
+        $service->startOrResume($participation->user, $competition);
+        $participation->refresh();
+
+        $this->travel(39)->seconds();
+
+        $service->submitAnswer($participation, $competition, $participation->questionIdAt(0), 'A');
+
+        $participation->refresh();
+        $this->assertSame('A', $participation->answerAt(0));
+
+        // The clock rolls past the old deadline: the recorded answer stands.
+        $this->travel(5)->seconds();
+        $service->currentQuestion($participation->refresh(), $competition);
+
+        $this->assertSame('A', $participation->refresh()->answerAt(0));
+        $this->assertSame(1, $participation->answered_questions);
+    }
+
+    // ── 3. simultaneous reads ───────────────────────────────────────────────
+
+    public function test_simultaneous_refreshes_fix_the_arrival_exactly_once(): void
+    {
+        [$competition, $participation] = $this->contestant(5);
+        $service = $this->service();
+
+        $service->startOrResume($participation->user, $competition);
+        $participation->refresh();
+
+        $arrivedAt = $participation->current_question_started_at;
+
+        $this->travel(5)->seconds();
+
+        $first = $service->currentQuestion($participation->fresh(), $competition);
+        $second = $service->currentQuestion($participation->fresh(), $competition);
+
+        $this->assertSame($first['expires_at'], $second['expires_at']);
+        $this->assertEquals($arrivedAt, $participation->refresh()->current_question_started_at, 'the window was reopened');
+    }
+
+    // ── 4. the portal closing underneath a request ──────────────────────────
+
+    public function test_closing_mid_flight_stops_the_contestant_without_corrupting_state(): void
+    {
+        [$competition, $participation] = $this->contestant(5);
+        $service = $this->service();
+
+        $service->startOrResume($participation->user, $competition);
+        $participation->refresh();
+
+        $service->submitAnswer($participation, $competition, null, 'A');
+
+        $before = json_encode($participation->fresh()->only([
+            'question_order', 'current_question', 'answers', 'correct_answers',
+            'answered_questions', 'exam_status',
+        ]));
+
         $competition->forceFill(['status' => Competition::STATUS_CLOSED])->save();
 
         foreach ([
-            fn () => $service->currentQuestion($inFlight),
-            fn () => $service->submitAnswer($inFlight, $question['question_id'], 'A'),
-            fn () => $service->startOrResume($inFlight->user, $competition->fresh()),
-        ] as $call) {
+            fn () => $service->currentQuestion($participation->fresh(), $competition),
+            fn () => $service->submitAnswer($participation->fresh(), $competition, null, 'B'),
+            fn () => $service->startOrResume($participation->user, $competition),
+        ] as $attempt) {
             try {
-                $call();
-                $this->fail('a closed competition must refuse every continuation');
+                $attempt();
+                $this->fail('a closed competition allowed the request through');
             } catch (ExamException $e) {
                 $this->assertSame('competition_closed', $e->reason);
             }
         }
 
-        $row = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->where('sequence', 1)->first();
+        $after = json_encode($participation->fresh()->only([
+            'question_order', 'current_question', 'answers', 'correct_answers',
+            'answered_questions', 'exam_status',
+        ]));
 
-        $this->assertNull($row->selected_option);
-        $this->assertFalse($row->timed_out);
-        $this->assertSame(CompetitionUser::EXAM_IN_PROGRESS, $participation->fresh()->exam_status);
+        $this->assertSame($before, $after, 'a refused request changed stored exam state');
     }
 
-    // ── 6. repeated finalisation ────────────────────────────────────────────
+    // ── 5. finalisation ─────────────────────────────────────────────────────
 
     public function test_repeated_finalisation_does_not_move_the_score_or_the_finish_line(): void
     {
         [$competition, $participation] = $this->contestant(3);
         $service = $this->service();
+
         $service->startOrResume($participation->user, $competition);
 
-        $expected = 0;
-
-        for ($i = 0; $i < 3; $i++) {
-            $question = $service->currentQuestion($participation->fresh());
-            $key = CompetitionQuestion::query()->find($question['question_id'])->correct_option;
-            $expected++;
-            $service->submitAnswer($participation->fresh(), $question['question_id'], $key);
+        for ($position = 0; $position < 3; $position++) {
+            $service->submitAnswer($participation->refresh(), $competition, null, 'A');
         }
 
-        $completedAt = $participation->fresh()->completed_at;
+        $participation->refresh();
+        $completedAt = $participation->completed_at;
+        $correct = $participation->correct_answers;
 
-        // Several concurrent readers all arriving at a finished paper.
-        $this->travel(2)->minutes();
+        $this->travel(120)->seconds();
 
-        for ($i = 0; $i < 5; $i++) {
-            $this->assertNull($service->currentQuestion($participation->fresh()));
-        }
+        $service->currentQuestion($participation->fresh(), $competition);
+        $service->startOrResume($participation->user, $competition);
+        $service->currentQuestion($participation->fresh(), $competition);
 
-        $final = $participation->fresh();
-        $this->assertEquals($completedAt, $final->completed_at, 'completed_at must be written once');
-        $this->assertSame($expected, $final->correct_answers);
-        $this->assertSame(3, $final->answered_questions);
-        $this->assertSame(CompetitionUser::EXAM_COMPLETED, $final->exam_status);
+        $participation->refresh();
+
+        $this->assertEquals($completedAt, $participation->completed_at);
+        $this->assertSame($correct, $participation->correct_answers);
+        $this->assertSame(3, $participation->current_question);
     }
 
     public function test_a_stale_request_cannot_answer_a_paper_that_has_already_finished(): void
     {
-        [$competition, $participation] = $this->contestant(1);
+        [$competition, $participation] = $this->contestant(3);
         $service = $this->service();
-        $service->startOrResume($participation->user, $competition);
-        $question = $service->currentQuestion($participation->fresh());
 
-        // Captured while the exam was still in progress.
+        $service->startOrResume($participation->user, $competition);
+        $participation->refresh();
+
+        // A request composed while the paper was still live.
         $stale = $participation->fresh();
 
-        $service->submitAnswer($participation->fresh(), $question['question_id'], 'A');
-        $this->assertSame(CompetitionUser::EXAM_COMPLETED, $participation->fresh()->exam_status);
+        for ($position = 0; $position < 3; $position++) {
+            $service->submitAnswer($participation->refresh(), $competition, null, 'A');
+        }
 
         try {
-            $service->submitAnswer($stale, $question['question_id'], 'B');
-            $this->fail('a completed exam must refuse a late submission');
+            $service->submitAnswer($stale, $competition, null, 'B');
+            $this->fail('a finished paper accepted another answer');
         } catch (ExamException $e) {
-            // The lock re-read sees `completed`, not the stale `in_progress`.
             $this->assertSame('exam_completed', $e->reason);
         }
 
-        $this->assertSame('A', CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->where('sequence', 1)->value('selected_option'));
+        $this->assertSame(3, $participation->refresh()->answered_questions);
     }
 
-    public function test_two_contestants_racing_each_other_keep_separate_papers_and_scores(): void
+    // ── 6. contestants racing each other ────────────────────────────────────
+
+    public function test_two_contestants_racing_keep_separate_papers_and_scores(): void
     {
-        [$competition, $first] = $this->contestant(4);
+        [$competition, $first] = $this->contestant(5);
         $second = $this->makeContestant($competition);
         $service = $this->service();
 
         $service->startOrResume($first->user, $competition);
         $service->startOrResume($second->user, $competition);
 
-        // Interleave their requests, as two contestants at adjacent desks would.
-        for ($i = 0; $i < 4; $i++) {
-            foreach ([$first, $second] as $index => $who) {
-                $question = $service->currentQuestion($who->fresh());
-                $key = CompetitionQuestion::query()->find($question['question_id'])->correct_option;
-                $wrong = collect(CompetitionQuestion::OPTIONS)->reject(fn ($o) => $o === $key)->first();
+        $first->refresh();
+        $second->refresh();
 
-                // The first contestant answers correctly, the second does not.
-                $service->submitAnswer($who->fresh(), $question['question_id'], $index === 0 ? $key : $wrong);
-            }
+        // Interleave their answers, as two simultaneous contestants would.
+        for ($position = 0; $position < 4; $position++) {
+            $service->submitAnswer($first->refresh(), $competition, null, $this->correctOptionAt($first->refresh(), $position));
+            $service->submitAnswer($second->refresh(), $competition, null, $this->wrongOptionAt($second->refresh(), $position));
         }
 
-        $this->assertSame(4, $first->fresh()->correct_answers);
-        $this->assertSame(0, $second->fresh()->correct_answers);
-        $this->assertSame(4, $first->fresh()->answered_questions);
-        $this->assertSame(4, $second->fresh()->answered_questions);
+        $first->refresh();
+        $second->refresh();
 
-        // Neither paper picked up a row belonging to the other.
-        foreach ([$first, $second] as $who) {
-            $this->assertSame(4, CompetitionUserQuestion::query()
-                ->where('competition_user_id', $who->id)->count());
-        }
+        $this->assertSame(4, $first->correct_answers);
+        $this->assertSame(0, $second->correct_answers);
+        $this->assertSame(4, $first->current_question);
+        $this->assertSame(4, $second->current_question);
+        $this->assertNotSame($first->answers, $second->answers);
     }
 }

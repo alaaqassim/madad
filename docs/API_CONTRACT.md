@@ -127,13 +127,16 @@ Identical envelope to `/exam/start`, so the client renders one shape.
 }
 ```
 
-`question` is `null` once the paper is finished; `exam_status` is then
-`completed`.
+`question` is `null` once the paper is finished (`exam_status` is then
+`completed`) and also before the exam has begun (`exam_status` is
+`not_started`). Branch on `exam_status`, not on the absence of a question.
 
-> **Serving a question is a state change.** The first time a question is
-> returned, its `opened_at` and `expires_at` are written from the server clock
-> and never change again. A refresh re-serves the same question with the same
-> deadline — reloading the page cannot buy time.
+> **Reading the current question is a state change.** The server reconciles the
+> contestant's position against elapsed time on every request. A refresh
+> re-serves the same question with the same deadline, and time spent away is
+> spent: positions whose windows closed while the contestant was disconnected,
+> logged out, or on another device are permanently skipped and cannot be
+> reclaimed. Reloading the page never buys time.
 
 ### Question payload
 
@@ -156,10 +159,10 @@ Exactly these keys, in this order. Nothing else is ever included.
 | Key | Notes |
 |---|---|
 | `question_id` | Send this back with the answer. |
-| `sequence` | Position on **this contestant's** paper, 1-based. |
-| `opened_at` / `expires_at` | ISO 8601, server clock, millisecond precision, written once. |
+| `sequence` | Position on **this contestant's** paper, 1-based. It is `current_question + 1`; the paper order itself is never sent. |
+| `opened_at` / `expires_at` | ISO 8601, server clock, millisecond precision. Derived from the contestant's timeline, never extended. |
 | `server_time` | Use it to correct for client clock skew — never trust the device clock. |
-| `seconds_remaining` | Float, derived from `expires_at - server_time`. Display only. |
+| `seconds_remaining` | Float, derived from `expires_at - server_time`, and never greater than `seconds_per_question`. Display only. |
 
 **Never present, at any point:** `correct_option`, `is_correct`, any other
 contestant's identifier, `competition_user_id`, or any scoring internal.
@@ -174,9 +177,15 @@ the deadline regardless of what the browser shows.
 { "question_id": 4211, "selected_option": "B" }
 ```
 
-Only these two fields are read. `is_correct`, `answered_at`, `sequence`,
-`expires_at` and anything else in the body are ignored — the server computes
-them.
+`selected_option` is the only field that decides anything. `question_id` is
+**optional** and is used solely as a consistency check: the server already knows
+which position the contestant is on and resolves the real question from their
+own paper, so a client can never choose which question it answers. Sending a
+different id is refused — `question_expired` if that position's window has
+already closed, `question_not_available` otherwise.
+
+`is_correct`, `answered_at`, `sequence`, `expires_at` and anything else in the
+body are ignored — the server computes them.
 
 **200**
 

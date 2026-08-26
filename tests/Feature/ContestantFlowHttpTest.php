@@ -5,7 +5,6 @@ namespace Tests\Feature;
 use App\Models\Competition;
 use App\Models\CompetitionQuestion;
 use App\Models\CompetitionUser;
-use App\Models\CompetitionUserQuestion;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Tests\Support\MadadFixtures;
@@ -109,15 +108,18 @@ class ContestantFlowHttpTest extends TestCase
             'selected_option' => 'A',
         ])->assertStatus(422)->assertJsonPath('reason', 'question_expired');
 
-        $expired = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->where('sequence', 2)->first();
-        $this->assertTrue($expired->timed_out);
-        $this->assertNull($expired->selected_option);
+        $participation->refresh();
+        $this->assertNull($participation->answerAt(1), 'a late answer was recorded');
+        $this->assertGreaterThanOrEqual(2, $participation->current_question);
 
         // ── continue: the exam is still live and serves question 3 ──────────
         $third = $this->getJson('/api/exam/current')->assertOk()->json('question');
         $this->assertSame(3, $third['sequence']);
-        $this->assertSame(40.0, round($third['seconds_remaining']), 'a new question gets its own full window');
+        // Windows are contiguous: position 3's began the instant position 2's
+        // closed, at t+40. One second of real time has passed since, so 39
+        // remain — a reload does not buy a fresh forty.
+        $this->assertSame(39.0, round($third['seconds_remaining']));
+        $this->assertLessThanOrEqual(40.0, $third['seconds_remaining']);
 
         // ── answer 3, 4 and the final question 5 ────────────────────────────
         $question = $third;

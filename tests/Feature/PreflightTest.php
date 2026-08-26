@@ -4,7 +4,6 @@ namespace Tests\Feature;
 
 use App\Models\Competition;
 use App\Models\CompetitionUser;
-use App\Models\CompetitionUserQuestion;
 use App\Services\Competition\PreflightCheck;
 use App\Services\Competition\PreflightService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -186,27 +185,33 @@ class PreflightTest extends TestCase
 
         $this->actingAs($participation->user)->postJson('/api/exam/start')->assertOk();
 
-        // Both answered and timed out — a state the engine can never produce.
-        CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)
-            ->where('sequence', 1)
-            ->update(['answered_at' => now(), 'selected_option' => 'A', 'timed_out' => true]);
+        // An answer recorded at a position the contestant has not reached — a
+        // state the engine can never produce.
+        $participation->refresh()->forceFill([
+            'answers' => 'A'.substr($participation->answers, 1),
+            'current_question' => 0,
+        ])->save();
 
         $report = $this->preflight()->run($competition);
 
         $this->assertSame(PreflightCheck::FAIL, $report->verdict());
-        $this->assertStringContainsString('1 rows are both answered and timed out', $this->detail($report->failures(), 'answered and timed out'));
+        $this->assertStringContainsString(
+            'contestants have answers recorded beyond their current position',
+            $this->detail($report->failures(), 'answers ahead of position'),
+        );
     }
 
     public function test_a_completed_total_that_disagrees_with_its_rows_is_a_blocker(): void
     {
         $competition = $this->healthyCompetition();
         $participation = $this->makeContestant($competition);
+        $this->giveOrder($participation, $competition);
 
         $participation->forceFill([
             'exam_status' => CompetitionUser::EXAM_COMPLETED,
             'completed_at' => now(),
-            'correct_answers' => 42,     // no answer rows exist to support this
+            'current_question' => $competition->question_count,
+            'correct_answers' => 42,     // nothing in `answers` supports this
             'answered_questions' => 42,
         ])->save();
 
@@ -272,7 +277,7 @@ class PreflightTest extends TestCase
     /** @return array<string, mixed> */
     private function fingerprint(): array
     {
-        $tables = ['competitions', 'competition_questions', 'competition_users', 'competition_user_questions', 'users'];
+        $tables = ['competitions', 'competition_questions', 'competition_users', 'users'];
         $fingerprint = [];
 
         foreach ($tables as $table) {

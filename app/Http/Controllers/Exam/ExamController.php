@@ -80,47 +80,65 @@ class ExamController extends Controller
         $competition = $this->requireCompetition();
         $participation = $this->exam->startOrResume($request->user(), $competition);
 
-        $question = $this->exam->currentQuestion($participation);
+        $question = $this->exam->currentQuestion($participation, $competition);
 
-        return response()->json([
-            'exam_status' => $participation->fresh()->exam_status,
-            'started_at' => $participation->started_at?->toIso8601String(),
-            'question' => $question,
-        ]);
+        return response()->json($this->envelope($participation, $question));
     }
 
     public function currentQuestion(Request $request): JsonResponse
     {
-        $participation = $this->requireParticipation($request);
-        $question = $this->exam->currentQuestion($participation);
+        $competition = $this->requireCompetition();
+        $participation = $this->requireParticipation($request, $competition);
 
         // Same envelope as /exam/start, so the client renders one shape whether
         // it just started, resumed, or merely refreshed.
-        return response()->json([
-            'exam_status' => $participation->fresh()->exam_status,
-            'started_at' => $participation->started_at?->toIso8601String(),
-            'question' => $question,
-        ]);
+        return response()->json($this->envelope(
+            $participation,
+            $this->exam->currentQuestion($participation, $competition),
+        ));
     }
 
     public function submit(SubmitAnswerRequest $request): JsonResponse
     {
-        $participation = $this->requireParticipation($request);
+        $competition = $this->requireCompetition();
+        $participation = $this->requireParticipation($request, $competition);
 
         $outcome = $this->exam->submitAnswer(
             $participation,
+            $competition,
             $request->questionId(),
             $request->selectedOption(),
         );
 
         return response()->json($outcome + [
-            'next_question' => $this->exam->currentQuestion($participation->fresh()),
+            'next_question' => $this->exam->currentQuestion($participation, $competition),
         ]);
     }
 
     public function result(Request $request): JsonResponse
     {
-        return response()->json($this->exam->result($this->requireParticipation($request)));
+        $competition = $this->requireCompetition();
+
+        return response()->json($this->exam->result(
+            $this->requireParticipation($request, $competition),
+            $competition,
+        ));
+    }
+
+    /**
+     * The shared envelope. The service mutates the participation in place, so
+     * its state here is already post-reconciliation — no re-read is needed.
+     *
+     * @param  array<string, mixed>|null  $question
+     * @return array<string, mixed>
+     */
+    private function envelope(CompetitionUser $participation, ?array $question): array
+    {
+        return [
+            'exam_status' => $participation->exam_status,
+            'started_at' => $participation->started_at?->toIso8601String(),
+            'question' => $question,
+        ];
     }
 
     // ───────────────────────────────────────────────────────── internals ────
@@ -146,9 +164,9 @@ class ExamController extends Controller
         return $competition;
     }
 
-    private function requireParticipation(Request $request): CompetitionUser
+    private function requireParticipation(Request $request, Competition $competition): CompetitionUser
     {
-        $participation = $this->exam->participationFor($request->user(), $this->requireCompetition());
+        $participation = $this->exam->participationFor($request->user(), $competition);
 
         if ($participation === null) {
             throw ExamException::notAContestant();

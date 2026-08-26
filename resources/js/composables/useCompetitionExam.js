@@ -145,6 +145,18 @@ export function useCompetitionExam(api = defaultApi) {
 
     /** An envelope from /exam/start, /exam/current, or the tail of /exam/answer. */
     async function applyEnvelope(envelope) {
+        // A contestant who has not begun has no question and is not finished.
+        // Without this branch an empty envelope would read as "completed".
+        if (envelope.exam_status === 'not_started') {
+            countdown.sync(null);
+            question.value = null;
+            selected.value = null;
+            awaitingServer.value = false;
+            screen.value = SCREEN.READY;
+
+            return;
+        }
+
         if (envelope.exam_status === 'completed' || !envelope.question) {
             await toCompleted();
 

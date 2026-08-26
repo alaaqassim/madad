@@ -4,7 +4,6 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * One contestant's participation: import record, account provisioning state,
@@ -44,6 +43,9 @@ class CompetitionUser extends Model
 
     public const EXAM_COMPLETED = 'completed';
 
+    /** The `answers` placeholder for a position with no recorded option. */
+    public const NO_ANSWER = '-';
+
     /**
      * Millisecond precision, because started_at / completed_at are datetime(3)
      * and that precision is part of the locked schema contract. created_at and
@@ -67,6 +69,10 @@ class CompetitionUser extends Model
         'exam_status',
         'started_at',
         'completed_at',
+        'question_order',
+        'current_question',
+        'current_question_started_at',
+        'answers',
         'correct_answers',
         'answered_questions',
     ];
@@ -79,10 +85,16 @@ class CompetitionUser extends Model
             'email_attempts' => 'integer',
             'correct_answers' => 'integer',
             'answered_questions' => 'integer',
+            'current_question' => 'integer',
+            // A JSON array of competition_questions.id held as a string. The
+            // cast is the only place it is decoded, so nothing else has to know
+            // how the paper is stored.
+            'question_order' => 'array',
             'credentials_generated_at' => 'datetime',
             'credentials_sent_at' => 'datetime',
             'started_at' => 'datetime',
             'completed_at' => 'datetime',
+            'current_question_started_at' => 'datetime',
         ];
     }
 
@@ -98,12 +110,6 @@ class CompetitionUser extends Model
         return $this->belongsTo(User::class);
     }
 
-    /** @return HasMany<CompetitionUserQuestion, $this> */
-    public function paper(): HasMany
-    {
-        return $this->hasMany(CompetitionUserQuestion::class)->orderBy('sequence');
-    }
-
     public function hasAccount(): bool
     {
         return $this->account_status === self::ACCOUNT_CREATED && $this->user_id !== null;
@@ -112,5 +118,34 @@ class CompetitionUser extends Model
     public function isCompleted(): bool
     {
         return $this->exam_status === self::EXAM_COMPLETED;
+    }
+
+    public function isInProgress(): bool
+    {
+        return $this->exam_status === self::EXAM_IN_PROGRESS;
+    }
+
+    /**
+     * The contestant's own paper: competition_questions ids in their order.
+     *
+     * @return list<int>
+     */
+    public function order(): array
+    {
+        return array_values(array_map('intval', $this->question_order ?? []));
+    }
+
+    /** The real question id at a position, or null if the position is off the paper. */
+    public function questionIdAt(int $index): ?int
+    {
+        return $this->order()[$index] ?? null;
+    }
+
+    /** The option recorded at a position, or null where none was given. */
+    public function answerAt(int $index): ?string
+    {
+        $mark = substr((string) $this->answers, $index, 1);
+
+        return ($mark === false || $mark === '' || $mark === self::NO_ANSWER) ? null : $mark;
     }
 }

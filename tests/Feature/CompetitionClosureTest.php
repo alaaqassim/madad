@@ -4,7 +4,6 @@ namespace Tests\Feature;
 
 use App\Models\Competition;
 use App\Models\CompetitionUser;
-use App\Models\CompetitionUserQuestion;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Support\MadadFixtures;
 use Tests\TestCase;
@@ -54,7 +53,7 @@ class CompetitionClosureTest extends TestCase
             ->assertJsonPath('reason', 'competition_closed');
 
         $this->assertSame(CompetitionUser::EXAM_NOT_STARTED, $participation->fresh()->exam_status);
-        $this->assertDatabaseCount('competition_user_questions', 0);
+        $this->assertNull($participation->fresh()->question_order, 'a refused start dealt a paper');
     }
 
     public function test_a_closed_competition_blocks_an_in_progress_contestant_from_resuming(): void
@@ -95,12 +94,11 @@ class CompetitionClosureTest extends TestCase
         ])->assertStatus(403)->assertJsonPath('reason', 'competition_closed');
 
         // The answer must not have landed.
-        $row = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->where('sequence', 1)->first();
+        $participation->refresh();
 
-        $this->assertNull($row->selected_option);
-        $this->assertNull($row->answered_at);
-        $this->assertFalse($row->timed_out);
+        $this->assertNull($participation->answerAt(0));
+        $this->assertSame(0, $participation->current_question);
+        $this->assertSame(0, $participation->answered_questions);
     }
 
     public function test_closing_mid_question_does_not_alter_the_paper_or_the_score(): void
@@ -113,9 +111,10 @@ class CompetitionClosureTest extends TestCase
             'selected_option' => 'A',
         ])->assertOk();
 
-        $before = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->orderBy('sequence')->get()
-            ->map(fn ($r) => [$r->sequence, $r->competition_question_id, $r->selected_option, $r->timed_out])->all();
+        $before = json_encode($participation->fresh()->only([
+            'question_order', 'current_question', 'current_question_started_at',
+            'answers', 'correct_answers', 'answered_questions', 'exam_status',
+        ]));
 
         $competition->forceFill(['status' => Competition::STATUS_CLOSED])->save();
 
@@ -123,9 +122,10 @@ class CompetitionClosureTest extends TestCase
         $this->postJson('/api/exam/answer', ['question_id' => $question['question_id'], 'selected_option' => 'B'])
             ->assertStatus(403);
 
-        $after = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->orderBy('sequence')->get()
-            ->map(fn ($r) => [$r->sequence, $r->competition_question_id, $r->selected_option, $r->timed_out])->all();
+        $after = json_encode($participation->fresh()->only([
+            'question_order', 'current_question', 'current_question_started_at',
+            'answers', 'correct_answers', 'answered_questions', 'exam_status',
+        ]));
 
         $this->assertSame($before, $after, 'a refused request must not change stored exam state');
     }

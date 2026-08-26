@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Models\CompetitionUser;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -79,7 +80,7 @@ class MadadPhase1Seeder extends Seeder
         $plan = $this->buildContestantPlan();
         $userIdByIndex = $this->seedUsers($plan);
         $competitionUserIdByIndex = $this->seedCompetitionUsers($competitionId, $plan, $userIdByIndex);
-        $this->seedAssignments($plan, $questionIds, $competitionUserIdByIndex);
+        $this->seedExamState($plan, $questionIds, $competitionUserIdByIndex);
 
         $this->command?->info(sprintf(
             'Madad fixtures seeded in %.1fs.',
@@ -127,7 +128,6 @@ class MadadPhase1Seeder extends Seeder
             'competitions' => DB::table('competitions')->count(),
             'competition_questions' => DB::table('competition_questions')->count(),
             'competition_users' => DB::table('competition_users')->count(),
-            'competition_user_questions' => DB::table('competition_user_questions')->count(),
         ];
 
         $occupied = array_filter($counts);
@@ -380,31 +380,29 @@ class MadadPhase1Seeder extends Seeder
         return $map;
     }
 
-    // ──────────────────────────────────────────────────── assignments ───────
+    // ─────────────────────────────────────────────────────── exam state ─────
 
     /**
-     * Every contestant gets all 75 questions exactly once, in their own
-     * persisted order. The per-question states are then written to match the
-     * contestant's exam_status, and the aggregates on competition_users are
-     * derived from the rows actually written — never guessed.
+     * Every contestant gets their own randomised question order and a position
+     * in it. The entire exam state is four values on the participation row —
+     * question_order, current_question, current_question_started_at and the
+     * positional answers string — and the aggregates are derived from the
+     * answers actually written, never guessed.
      *
      * @param  list<array<string, mixed>>  $plan
      * @param  list<int>  $questionIds
      * @param  array<int, int>  $competitionUserIdByIndex
      */
-    private function seedAssignments(array $plan, array $questionIds, array $competitionUserIdByIndex): void
+    private function seedExamState(array $plan, array $questionIds, array $competitionUserIdByIndex): void
     {
-        $now = $this->now();
         $correctByQuestionId = DB::table('competition_questions')
             ->pluck('correct_option', 'id')
             ->all();
 
-        $buffer = [];
-        $aggregateUpdates = [];
+        $updates = [];
 
         foreach ($plan as $entry) {
             $i = $entry['index'];
-            $competitionUserId = $competitionUserIdByIndex[$i];
 
             $this->seedRandom($i, 'order');
             $order = $this->deterministicShuffle($questionIds);
@@ -412,31 +410,11 @@ class MadadPhase1Seeder extends Seeder
             $this->seedRandom($i, 'exam');
             $state = $this->buildExamState($entry['exam_status'], $order, $correctByQuestionId, $i);
 
-            foreach ($order as $position => $questionId) {
-                $sequence = $position + 1;
-                $q = $state['questions'][$sequence];
-
-                $buffer[] = [
-                    'competition_user_id' => $competitionUserId,
-                    'competition_question_id' => $questionId,
-                    'sequence' => $sequence,
-                    'opened_at' => $q['opened_at'],
-                    'expires_at' => $q['expires_at'],
-                    'selected_option' => $q['selected_option'],
-                    'answered_at' => $q['answered_at'],
-                    'is_correct' => $q['is_correct'],
-                    'timed_out' => $q['timed_out'],
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ];
-
-                if (count($buffer) >= self::INSERT_CHUNK) {
-                    DB::table('competition_user_questions')->insert($buffer);
-                    $buffer = [];
-                }
-            }
-
-            $aggregateUpdates[$competitionUserId] = [
+            $updates[$competitionUserIdByIndex[$i]] = [
+                'question_order' => json_encode($order),
+                'answers' => $state['answers'],
+                'current_question' => $state['current_question'],
+                'current_question_started_at' => $state['current_question_started_at'],
                 'started_at' => $state['started_at'],
                 'completed_at' => $state['completed_at'],
                 'correct_answers' => $state['correct_answers'],
@@ -444,15 +422,19 @@ class MadadPhase1Seeder extends Seeder
             ];
         }
 
-        if ($buffer !== []) {
-            DB::table('competition_user_questions')->insert($buffer);
-        }
-
-        $this->applyAggregates($aggregateUpdates);
+        $this->applyAggregates($updates);
     }
 
     /**
-     * Builds the per-question end state for one contestant.
+     * One contestant's end state under the Array + Index model.
+     *
+     *   not_started  order persisted, position 0, nothing answered, no timeline
+     *   in_progress  anchored to the present, so the fixture is genuinely
+     *                mid-exam: a developer who logs in as one of these resumes a
+     *                live question instead of a paper the clock finished months
+     *                ago. Time never pauses, so a historical in-progress row
+     *                would reconcile straight to completed on first contact.
+     *   completed    a historical sitting on the fixed exam day
      *
      * @param  list<int>  $order
      * @param  array<int, string>  $correctByQuestionId
@@ -460,19 +442,13 @@ class MadadPhase1Seeder extends Seeder
      */
     private function buildExamState(string $examStatus, array $order, array $correctByQuestionId, int $index): array
     {
-        $questions = [];
-        $blank = [
-            'opened_at' => null, 'expires_at' => null, 'selected_option' => null,
-            'answered_at' => null, 'is_correct' => false, 'timed_out' => false,
-        ];
+        $blank = str_repeat(CompetitionUser::NO_ANSWER, self::QUESTIONS);
 
         if ($examStatus === 'not_started') {
-            for ($s = 1; $s <= self::QUESTIONS; $s++) {
-                $questions[$s] = $blank;
-            }
-
             return [
-                'questions' => $questions,
+                'answers' => $blank,
+                'current_question' => 0,
+                'current_question_started_at' => null,
                 'started_at' => null,
                 'completed_at' => null,
                 'correct_answers' => 0,
@@ -480,101 +456,70 @@ class MadadPhase1Seeder extends Seeder
             ];
         }
 
-        // How many questions are already terminal, and is one still open?
-        if ($examStatus === 'completed') {
-            $terminal = self::QUESTIONS;
-            $timeouts = $this->weightedTimeouts();
-            $activeSequence = null;
-        } else {
-            $terminal = 5 + ($index % 60);          // 5..64 finished
-            $timeouts = min($this->weightedTimeouts(), max(0, $terminal - 1));
-            $activeSequence = $terminal + 1;        // exactly one open question
-        }
+        $completed = $examStatus === 'completed';
+        $position = $completed ? self::QUESTIONS : 5 + ($index % 60);   // 5..64 spent
 
-        // Which of the terminal sequences timed out.
-        $timedOutSequences = $this->pickDistinct($terminal, $timeouts, 2);
+        $timeouts = $completed
+            ? $this->weightedTimeouts()
+            : min($this->weightedTimeouts(), max(0, $position - 1));
 
-        $answeredCount = $terminal - count($timedOutSequences);
-        // Accuracy is a RATIO of what was attempted, not an absolute count.
-        // An absolute target clamped against a partially-finished paper would
-        // hand most in-progress contestants a perfect record.
+        // Which of the spent positions carry no answer: the contestant was away,
+        // or thought too long, and the window closed on them.
+        $skipped = $this->pickDistinct($position, $timeouts, 2);
+
+        $answeredCount = $position - count($skipped);
+        // Accuracy is a RATIO of what was attempted, not an absolute count. An
+        // absolute target clamped against a partly-finished paper would hand
+        // most in-progress contestants a perfect record.
         $targetCorrect = (int) round($this->bellCurveAccuracy() * $answeredCount);
         $targetCorrect = max(0, min($targetCorrect, $answeredCount));
-        $correctSequences = $this->pickDistinct($terminal, $targetCorrect, 1, $timedOutSequences);
+        $correctPositions = $this->pickDistinct($position, $targetCorrect, 1, $skipped);
 
-        $cursor = $this->examDay()->copy()->addSeconds(($index % 900) * 4);
-        $startedAt = null;
-        $lastTerminalAt = null;
+        $answers = $blank;
         $correctAnswers = 0;
         $answeredQuestions = 0;
 
-        for ($s = 1; $s <= self::QUESTIONS; $s++) {
-            if ($s > $terminal && $s !== $activeSequence) {
-                $questions[$s] = $blank;
-
-                continue;
+        for ($p = 1; $p <= $position; $p++) {
+            if (in_array($p, $skipped, true)) {
+                continue;                       // stays '-' — the window elapsed
             }
 
-            $openedAt = $cursor->copy();
-            $expiresAt = $openedAt->copy()->addSeconds(self::SECONDS_PER_QUESTION);
-            $startedAt ??= $openedAt->copy();
+            $correctOption = $correctByQuestionId[$order[$p - 1]];
+            $isCorrect = in_array($p, $correctPositions, true);
 
-            if ($s === $activeSequence) {
-                // The live question: opened, deadline set, nothing answered yet.
-                $questions[$s] = [
-                    'opened_at' => $this->ms($openedAt),
-                    'expires_at' => $this->ms($expiresAt),
-                    'selected_option' => null,
-                    'answered_at' => null,
-                    'is_correct' => false,
-                    'timed_out' => false,
-                ];
-
-                continue;
-            }
-
-            if (in_array($s, $timedOutSequences, true)) {
-                $questions[$s] = [
-                    'opened_at' => $this->ms($openedAt),
-                    'expires_at' => $this->ms($expiresAt),
-                    'selected_option' => null,
-                    'answered_at' => null,
-                    'is_correct' => false,
-                    'timed_out' => true,
-                ];
-                $lastTerminalAt = $expiresAt->copy();
-                $cursor = $expiresAt->copy()->addSeconds(mt_rand(1, 3));
-
-                continue;
-            }
-
-            // Answered strictly inside the 40-second window.
-            $answeredAt = $openedAt->copy()->addMilliseconds(mt_rand(1500, (self::SECONDS_PER_QUESTION * 1000) - 500));
-            $questionId = $order[$s - 1];
-            $correctOption = $correctByQuestionId[$questionId];
-            $isCorrect = in_array($s, $correctSequences, true);
-
-            $questions[$s] = [
-                'opened_at' => $this->ms($openedAt),
-                'expires_at' => $this->ms($expiresAt),
-                'selected_option' => $isCorrect
-                    ? $correctOption
-                    : $this->wrongOption($correctOption),
-                'answered_at' => $this->ms($answeredAt),
-                'is_correct' => $isCorrect,
-                'timed_out' => false,
-            ];
-
+            $answers[$p - 1] = $isCorrect ? $correctOption : $this->wrongOption($correctOption);
             $answeredQuestions++;
             $correctAnswers += $isCorrect ? 1 : 0;
-            $lastTerminalAt = $answeredAt->copy();
-            $cursor = $answeredAt->copy()->addSeconds(mt_rand(1, 3));
         }
 
+        $window = self::SECONDS_PER_QUESTION;
+
+        if ($completed) {
+            $startedAt = $this->examDay()->copy()->addSeconds(($index % 900) * 4);
+            $finishedAt = $startedAt->copy()->addSeconds(self::QUESTIONS * $window);
+
+            return [
+                'answers' => $answers,
+                'current_question' => self::QUESTIONS,
+                'current_question_started_at' => $this->ms($finishedAt),
+                'started_at' => $this->ms($startedAt),
+                'completed_at' => $this->ms($finishedAt),
+                'correct_answers' => $correctAnswers,
+                'answered_questions' => $answeredQuestions,
+            ];
+        }
+
+        // Live: they reached the current position a few seconds ago, and
+        // started_at is placed so the fixed timeline agrees with that position.
+        $arrivedAt = Carbon::now()->subSeconds(mt_rand(2, $window - 5));
+        $startedAt = $arrivedAt->copy()->subSeconds($position * $window);
+
         return [
-            'questions' => $questions,
-            'started_at' => $startedAt ? $this->ms($startedAt) : null,
-            'completed_at' => $examStatus === 'completed' && $lastTerminalAt ? $this->ms($lastTerminalAt) : null,
+            'answers' => $answers,
+            'current_question' => $position,
+            'current_question_started_at' => $this->ms($arrivedAt),
+            'started_at' => $this->ms($startedAt),
+            'completed_at' => null,
             'correct_answers' => $correctAnswers,
             'answered_questions' => $answeredQuestions,
         ];

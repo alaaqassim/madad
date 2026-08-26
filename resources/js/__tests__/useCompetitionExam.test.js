@@ -246,6 +246,23 @@ describe('useCompetitionExam — the exam', () => {
         expect(api.answer).not.toHaveBeenCalled();
     });
 
+    it('sends a not_started envelope to the ready screen, not the completion screen', async () => {
+        // An envelope with no question is not automatically an ended exam: a
+        // contestant who has not begun has neither. Reading them as the same
+        // thing would show the completion screen to someone yet to start.
+        const api = stubApi({
+            start: vi.fn().mockResolvedValue({ exam_status: 'not_started', started_at: null, question: null }),
+        });
+        const { exam } = build(api);
+
+        await exam.boot();
+        await exam.start();
+
+        expect(exam.screen.value).toBe(SCREEN.READY);
+        expect(exam.question.value).toBeNull();
+        expect(api.result).not.toHaveBeenCalled();
+    });
+
     it('completes when the answer response carries no next question', async () => {
         const api = stubApi({
             answer: vi.fn().mockResolvedValue({ accepted: true, sequence: 3, exam_status: 'completed', next_question: null }),

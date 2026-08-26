@@ -298,159 +298,237 @@ class PreflightService
 
     // ───────────────────────────────────────────────────────── exam data ────
 
-    /** @return list<PreflightCheck> */
+    /**
+     * Integrity of the Array + Index exam state.
+     *
+     * Everything the exam knows now lives on competition_users, so these checks
+     * read the participation row and inspect two strings: the persisted question
+     * order and the positional answer string. They must agree with each other,
+     * with the question bank, and with the stored totals.
+     *
+     * @return list<PreflightCheck>
+     */
     private function examDataChecks(Competition $competition): array
     {
-        $paper = fn () => DB::table('competition_user_questions as cuq')
-            ->join('competition_users as cu', 'cu.id', '=', 'cuq.competition_user_id')
-            ->where('cu.competition_id', $competition->id);
+        $count = (int) $competition->question_count;
 
-        $checks = [
-            PreflightCheck::pass('Exam data', 'assignments', $paper()->count().' question assignments'),
+        $bank = DB::table('competition_questions')
+            ->where('competition_id', $competition->id)
+            ->pluck('correct_option', 'id')
+            ->all();
+
+        $withOrder = 0;
+        $startedWithoutOrder = 0;
+        $wrongLength = 0;
+        $duplicateIds = 0;
+        $foreignIds = 0;
+        $badAnswerLength = 0;
+        $badAnswerChars = 0;
+        $indexOutOfRange = 0;
+        $answeredAhead = 0;
+        $missingTimeline = 0;
+        $arrivalBeforeStart = 0;
+        $notStartedWithProgress = 0;
+        $completedNotAtEnd = 0;
+        $aggregateMismatch = 0;
+
+        DB::table('competition_users')
+            ->where('competition_id', $competition->id)
+            ->orderBy('id')
+            ->select([
+                'id', 'exam_status', 'started_at', 'completed_at', 'question_order',
+                'current_question', 'current_question_started_at', 'answers',
+                'correct_answers', 'answered_questions',
+            ])
+            ->chunk(500, function ($rows) use (
+                $count, $bank,
+                &$withOrder, &$startedWithoutOrder, &$wrongLength, &$duplicateIds, &$foreignIds,
+                &$badAnswerLength, &$badAnswerChars, &$indexOutOfRange, &$answeredAhead,
+                &$missingTimeline, &$arrivalBeforeStart, &$notStartedWithProgress,
+                &$completedNotAtEnd, &$aggregateMismatch,
+            ): void {
+                foreach ($rows as $row) {
+                    $started = $row->exam_status !== CompetitionUser::EXAM_NOT_STARTED;
+                    $order = $row->question_order === null ? [] : (array) json_decode($row->question_order, true);
+                    $answers = (string) $row->answers;
+                    $index = $row->current_question === null ? null : (int) $row->current_question;
+
+                    if ($order === []) {
+                        if ($started) {
+                            $startedWithoutOrder++;
+                        }
+
+                        continue;
+                    }
+
+                    $withOrder++;
+
+                    if (count($order) !== $count) {
+                        $wrongLength++;
+                    }
+
+                    if (count(array_unique($order)) !== count($order)) {
+                        $duplicateIds++;
+                    }
+
+                    if (array_diff($order, array_keys($bank)) !== []) {
+                        $foreignIds++;
+                    }
+
+                    if (strlen($answers) !== count($order)) {
+                        $badAnswerLength++;
+                    }
+
+                    if (preg_match('/[^ABCD\-]/', $answers) === 1) {
+                        $badAnswerChars++;
+                    }
+
+                    if ($index === null || $index < 0 || $index > $count) {
+                        $indexOutOfRange++;
+
+                        continue;
+                    }
+
+                    // Nothing may be recorded at a position the contestant has
+                    // not reached — that would mean answering out of order.
+                    if (preg_match('/[ABCD]/', substr($answers, $index)) === 1) {
+                        $answeredAhead++;
+                    }
+
+                    if ($started && ($row->started_at === null || $row->current_question_started_at === null)) {
+                        $missingTimeline++;
+                    }
+
+                    if ($row->started_at !== null && $row->current_question_started_at !== null
+                        && $row->current_question_started_at < $row->started_at) {
+                        $arrivalBeforeStart++;
+                    }
+
+                    if (! $started && ($index > 0 || preg_match('/[ABCD]/', $answers) === 1)) {
+                        $notStartedWithProgress++;
+                    }
+
+                    if ($row->exam_status === CompetitionUser::EXAM_COMPLETED) {
+                        if ($index < $count) {
+                            $completedNotAtEnd++;
+                        }
+
+                        $correct = 0;
+                        $answered = 0;
+
+                        foreach ($order as $position => $questionId) {
+                            $given = substr($answers, $position, 1);
+
+                            if ($given === '' || $given === false || $given === CompetitionUser::NO_ANSWER) {
+                                continue;
+                            }
+
+                            $answered++;
+
+                            if (($bank[$questionId] ?? null) === $given) {
+                                $correct++;
+                            }
+                        }
+
+                        if ((int) $row->correct_answers !== $correct || (int) $row->answered_questions !== $answered) {
+                            $aggregateMismatch++;
+                        }
+                    }
+                }
+            });
+
+        return [
+            PreflightCheck::pass('Exam data', 'question orders', $withOrder.' contestants hold a persisted order'),
+
+            PreflightCheck::forCount(
+                'Exam data', 'missing orders', $startedWithoutOrder,
+                'started contestants have no question_order',
+                'every started contestant has a persisted question order',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'order length', $wrongLength,
+                "orders are not exactly {$count} questions",
+                "every order is exactly {$count} questions",
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'duplicate questions', $duplicateIds,
+                'orders contain the same question twice',
+                'no order contains a repeated question',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'foreign questions', $foreignIds,
+                "orders reference questions outside this competition's bank",
+                'every question in every order belongs to this competition',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'answer length', $badAnswerLength,
+                'answer strings do not match the length of the order',
+                'every answer string matches its order length',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'answer alphabet', $badAnswerChars,
+                'answer strings contain a character outside A/B/C/D/-',
+                'every answer string uses only A, B, C, D or -',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'position range', $indexOutOfRange,
+                "current_question is missing or outside 0..{$count}",
+                'every current_question is within range',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'answers ahead of position', $answeredAhead,
+                'contestants have answers recorded beyond their current position',
+                'no contestant has answered ahead of their position',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'timeline anchors', $missingTimeline,
+                'started contestants are missing started_at or current_question_started_at',
+                'every started contestant has both timeline anchors',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'arrival ordering', $arrivalBeforeStart,
+                'contestants arrived at their position before the exam started',
+                'no arrival predates the start of the exam',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'not-started integrity', $notStartedWithProgress,
+                'not_started contestants already carry progress',
+                'no not_started contestant has progress recorded',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'terminal position', $completedNotAtEnd,
+                'completed contestants have not reached the end of their paper',
+                'every completed contestant is at the end of their paper',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'completed aggregates', $aggregateMismatch,
+                'completed contestants have stored totals that disagree with their answers',
+                'every completed total matches the answers it summarises',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'completion timestamps',
+                DB::table('competition_users')
+                    ->where('competition_id', $competition->id)
+                    ->where('exam_status', CompetitionUser::EXAM_COMPLETED)
+                    ->whereNull('completed_at')
+                    ->count(),
+                'completed contestants have no completed_at',
+                'every completed contestant has a completed_at',
+            ),
         ];
-
-        $duplicateSequences = DB::table('competition_user_questions')
-            ->selectRaw('competition_user_id, sequence')
-            ->groupBy('competition_user_id', 'sequence')
-            ->havingRaw('COUNT(*) > 1')
-            ->get()->count();
-
-        $checks[] = PreflightCheck::forCount(
-            'Exam data', 'duplicate sequences', $duplicateSequences,
-            '(contestant, sequence) pairs appear more than once',
-            'no contestant has a repeated sequence position',
-        );
-
-        $duplicateQuestions = DB::table('competition_user_questions')
-            ->selectRaw('competition_user_id, competition_question_id')
-            ->groupBy('competition_user_id', 'competition_question_id')
-            ->havingRaw('COUNT(*) > 1')
-            ->get()->count();
-
-        $checks[] = PreflightCheck::forCount(
-            'Exam data', 'duplicate assignments', $duplicateQuestions,
-            'questions appear twice on the same paper',
-            'no question appears twice on one paper',
-        );
-
-        // A row cannot be both answered and timed out; a selected option with no
-        // answered_at, or an answer to a question that was never served, are the
-        // other two states the engine must never produce.
-        $checks[] = PreflightCheck::forCount(
-            'Exam data', 'answered and timed out',
-            $paper()->whereNotNull('cuq.answered_at')->where('cuq.timed_out', true)->count(),
-            'rows are both answered and timed out',
-            'no row is both answered and timed out',
-        );
-
-        $checks[] = PreflightCheck::forCount(
-            'Exam data', 'answer timestamps',
-            $paper()->whereNotNull('cuq.selected_option')->whereNull('cuq.answered_at')->count(),
-            'rows carry a selected option with no answered_at',
-            'every selected option has an answered_at',
-        );
-
-        $checks[] = PreflightCheck::forCount(
-            'Exam data', 'unopened answers',
-            $paper()->whereNotNull('cuq.answered_at')->whereNull('cuq.opened_at')->count(),
-            'rows were answered without ever being served',
-            'no question was answered before it was served',
-        );
-
-        $checks[] = PreflightCheck::forCount(
-            'Exam data', 'scoring integrity',
-            $paper()->where('cuq.is_correct', true)->whereNull('cuq.selected_option')->count(),
-            'rows are marked correct with no option selected',
-            'every correct row has a selected option',
-        );
-
-        // A deadline that is not exactly seconds_per_question after opened_at
-        // would mean the 40-second rule was not applied to that question.
-        $checks[] = PreflightCheck::forCount(
-            'Exam data', 'timer windows',
-            $paper()
-                ->whereNotNull('cuq.opened_at')
-                ->whereRaw('TIMESTAMPDIFF(SECOND, cuq.opened_at, cuq.expires_at) <> ?', [$competition->seconds_per_question])
-                ->count(),
-            "served questions have a window that is not {$competition->seconds_per_question} seconds",
-            "every served question has exactly a {$competition->seconds_per_question}-second window",
-        );
-
-        // Papers that are the wrong length would silently advantage or
-        // disadvantage a contestant against the field.
-        $checks[] = PreflightCheck::forCount(
-            'Exam data', 'paper length',
-            DB::table('competition_users as cu')
-                ->leftJoin('competition_user_questions as cuq', 'cuq.competition_user_id', '=', 'cu.id')
-                ->where('cu.competition_id', $competition->id)
-                ->where('cu.exam_status', '!=', CompetitionUser::EXAM_NOT_STARTED)
-                ->select('cu.id')
-                ->groupBy('cu.id')
-                ->havingRaw('COUNT(cuq.id) <> ?', [$competition->question_count])
-                ->get()->count(),
-            "started contestants have a paper that is not {$competition->question_count} questions",
-            "every started contestant has exactly {$competition->question_count} questions",
-        );
-
-        // A completed contestant must have no question still awaiting an answer.
-        $checks[] = PreflightCheck::forCount(
-            'Exam data', 'terminal states',
-            DB::table('competition_users as cu')
-                ->where('cu.competition_id', $competition->id)
-                ->where('cu.exam_status', CompetitionUser::EXAM_COMPLETED)
-                ->whereExists(function ($q): void {
-                    $q->select(DB::raw(1))
-                        ->from('competition_user_questions as cuq')
-                        ->whereColumn('cuq.competition_user_id', 'cu.id')
-                        ->whereNull('cuq.answered_at')
-                        ->where('cuq.timed_out', false);
-                })->count(),
-            'completed contestants still have an unanswered, un-expired question',
-            'no completed contestant has an outstanding question',
-        );
-
-        $checks[] = PreflightCheck::forCount(
-            'Exam data', 'not-started integrity',
-            DB::table('competition_users as cu')
-                ->where('cu.competition_id', $competition->id)
-                ->where('cu.exam_status', CompetitionUser::EXAM_NOT_STARTED)
-                ->whereExists(function ($q): void {
-                    $q->select(DB::raw(1))
-                        ->from('competition_user_questions as cuq')
-                        ->whereColumn('cuq.competition_user_id', 'cu.id')
-                        ->whereNotNull('cuq.opened_at');
-                })->count(),
-            'not_started contestants have already been served a question',
-            'no not_started contestant has been served a question',
-        );
-
-        // The stored result must equal the rows it summarises.
-        $checks[] = PreflightCheck::forCount(
-            'Exam data', 'completed aggregates',
-            DB::table('competition_users as cu')
-                ->leftJoin('competition_user_questions as cuq', 'cuq.competition_user_id', '=', 'cu.id')
-                ->where('cu.competition_id', $competition->id)
-                ->where('cu.exam_status', CompetitionUser::EXAM_COMPLETED)
-                ->select('cu.id', 'cu.correct_answers', 'cu.answered_questions')
-                ->groupBy('cu.id', 'cu.correct_answers', 'cu.answered_questions')
-                ->havingRaw('cu.correct_answers <> COALESCE(SUM(cuq.is_correct), 0) OR cu.answered_questions <> COALESCE(SUM(cuq.selected_option IS NOT NULL), 0)')
-                ->get()->count(),
-            'completed contestants have stored totals that disagree with their answer rows',
-            'every completed total matches the rows it summarises',
-        );
-
-        $checks[] = PreflightCheck::forCount(
-            'Exam data', 'completion timestamps',
-            DB::table('competition_users')
-                ->where('competition_id', $competition->id)
-                ->where('exam_status', CompetitionUser::EXAM_COMPLETED)
-                ->whereNull('completed_at')
-                ->count(),
-            'completed contestants have no completed_at',
-            'every completed contestant has a completed_at',
-        );
-
-        return $checks;
     }
 
     /** @param  Collection<string, int>  $counts */

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\CompetitionUser;
 use App\Services\Competition\CredentialDeliveryService;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -24,12 +25,11 @@ class DatabaseContractTest extends TestCase
 {
     use MadadFixtures, RefreshDatabase;
 
-    /** The four competition tables. Exactly these, and no more. */
+    /** The three competition tables. Exactly these, and no more. */
     private const COMPETITION_TABLES = [
         'competitions',
         'competition_questions',
         'competition_users',
-        'competition_user_questions',
     ];
 
     /** Framework tables Laravel itself owns; not part of the competition contract. */
@@ -81,22 +81,15 @@ class DatabaseContractTest extends TestCase
             'exam_status' => "enum('not_started','in_progress','completed')",
             'started_at' => 'datetime(3)',
             'completed_at' => 'datetime(3)',
+            // The Array + Index exam state. question_order is a JSON array held
+            // as a string: 75 ids of d digits encode to 75d + 76 characters, so
+            // the current bank already needs 277 and varchar(255) would truncate.
+            'question_order' => 'varchar(1024)',
+            'current_question' => 'smallint',
+            'current_question_started_at' => 'datetime(3)',
+            'answers' => 'varchar(255)',
             'correct_answers' => 'smallint',
             'answered_questions' => 'smallint',
-            'created_at' => 'datetime',
-            'updated_at' => 'datetime',
-        ],
-        'competition_user_questions' => [
-            'id' => 'bigint',
-            'competition_user_id' => 'bigint',
-            'competition_question_id' => 'bigint',
-            'sequence' => 'smallint',
-            'opened_at' => 'datetime(3)',
-            'expires_at' => 'datetime(3)',
-            'selected_option' => "enum('A','B','C','D')",
-            'answered_at' => 'datetime(3)',
-            'is_correct' => 'tinyint(1)',
-            'timed_out' => 'tinyint(1)',
             'created_at' => 'datetime',
             'updated_at' => 'datetime',
         ],
@@ -126,7 +119,7 @@ class DatabaseContractTest extends TestCase
         return $columns;
     }
 
-    public function test_the_competition_schema_contains_exactly_four_tables(): void
+    public function test_the_competition_schema_contains_exactly_three_tables(): void
     {
         $tables = array_map(
             fn ($row) => array_values((array) $row)[0],
@@ -158,8 +151,7 @@ class DatabaseContractTest extends TestCase
         // at. Narrowing any of these to whole seconds would silently make a
         // 40.000-second answer indistinguishable from a 40.999-second one.
         $precise = [
-            'competition_users' => ['started_at', 'completed_at'],
-            'competition_user_questions' => ['opened_at', 'expires_at', 'answered_at'],
+            'competition_users' => ['started_at', 'completed_at', 'current_question_started_at'],
         ];
 
         foreach ($precise as $table => $columns) {
@@ -225,7 +217,7 @@ class DatabaseContractTest extends TestCase
             'question_id' => $question['question_id'], 'selected_option' => 'A',
         ])->assertOk();
 
-        $this->assertGreaterThan(0, DB::table('competition_user_questions')->count());
+        $this->assertNotNull($participation->fresh()->question_order);
 
         // The hash belongs on users.password and nowhere else. A copy anywhere
         // in the competition tables would be a second place to leak it from.
@@ -245,7 +237,6 @@ class DatabaseContractTest extends TestCase
         $expected = [
             'competition_questions' => ['uq_competition_questions_competition_number'],
             'competition_users' => ['uq_competition_users_competition_email', 'uq_competition_users_competition_user'],
-            'competition_user_questions' => ['uq_cuq_user_sequence', 'uq_cuq_user_question'],
         ];
 
         foreach ($expected as $table => $indexes) {
@@ -261,46 +252,32 @@ class DatabaseContractTest extends TestCase
         }
     }
 
-    public function test_a_duplicate_sequence_on_one_paper_is_impossible(): void
+    /**
+     * The paper must survive the round trip.
+     *
+     * VARCHAR(255) was the original suggestion for question_order, and it is
+     * too small: the live bank already encodes to 277 characters. A silent
+     * truncation here would corrupt a contestant's paper without any error.
+     */
+    public function test_a_full_seventy_five_question_order_round_trips_without_truncation(): void
     {
-        $this->expectException(UniqueConstraintViolationException::class);
+        $competition = $this->makeCompetition(['question_count' => 75]);
+        $questions = $this->makeQuestions($competition, 75);
+        $participation = $this->makeContestant($competition);
 
-        $competition = DB::table('competitions')->insertGetId([
-            'name' => 'lock test', 'status' => 'open', 'show_result' => 0,
-            'question_count' => 2, 'seconds_per_question' => 40,
-            'created_at' => now(), 'updated_at' => now(),
-        ]);
+        $order = array_map(fn ($q) => $q->id, $questions);
+        $encoded = json_encode($order);
 
-        $question = DB::table('competition_questions')->insertGetId([
-            'competition_id' => $competition, 'question_number' => 1,
-            'question_text' => 'س', 'option_a' => 'أ', 'option_b' => 'ب',
-            'option_c' => 'ج', 'option_d' => 'د', 'correct_option' => 'A',
-            'created_at' => now(), 'updated_at' => now(),
-        ]);
+        $participation->forceFill([
+            'question_order' => $order,
+            'answers' => str_repeat(CompetitionUser::NO_ANSWER, 75),
+        ])->save();
 
-        $second = DB::table('competition_questions')->insertGetId([
-            'competition_id' => $competition, 'question_number' => 2,
-            'question_text' => 'س2', 'option_a' => 'أ', 'option_b' => 'ب',
-            'option_c' => 'ج', 'option_d' => 'د', 'correct_option' => 'B',
-            'created_at' => now(), 'updated_at' => now(),
-        ]);
+        $stored = DB::table('competition_users')->where('id', $participation->id)->value('question_order');
 
-        $participation = DB::table('competition_users')->insertGetId([
-            'competition_id' => $competition, 'user_id' => null,
-            'contestant_name' => 'اختبار', 'contestant_email' => 'lock@madad.test',
-            'account_status' => 'pending', 'email_status' => 'pending', 'email_attempts' => 0,
-            'exam_status' => 'not_started', 'correct_answers' => 0, 'answered_questions' => 0,
-            'created_at' => now(), 'updated_at' => now(),
-        ]);
-
-        foreach ([$question, $second] as $questionId) {
-            DB::table('competition_user_questions')->insert([
-                'competition_user_id' => $participation,
-                'competition_question_id' => $questionId,
-                'sequence' => 1,   // the same position twice — the database must refuse
-                'is_correct' => 0, 'timed_out' => 0,
-                'created_at' => now(), 'updated_at' => now(),
-            ]);
-        }
+        $this->assertSame($encoded, $stored, 'the question order was truncated on write');
+        $this->assertSame($order, $participation->fresh()->order());
+        $this->assertCount(75, $participation->fresh()->order());
+        $this->assertSame(75, strlen($participation->fresh()->answers));
     }
 }

@@ -3,18 +3,25 @@
 namespace Tests\Feature;
 
 use App\Exceptions\ExamException;
-use App\Models\CompetitionQuestion;
+use App\Models\Competition;
 use App\Models\CompetitionUser;
-use App\Models\CompetitionUserQuestion;
 use App\Services\Competition\CompetitionExamService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Support\MadadFixtures;
 use Tests\TestCase;
 
+/**
+ * Submitting an answer.
+ *
+ * The client sends an option. It does not send a position, and the question id
+ * it may send is only ever checked against the one the server already resolved
+ * from question_order[current_question] — never used to choose.
+ */
 class AnswerSubmissionTest extends TestCase
 {
     use MadadFixtures, RefreshDatabase;
 
+    /** @return array{0: Competition, 1: CompetitionUser, 2: CompetitionExamService} */
     private function startedContestant(int $questions = 5): array
     {
         $competition = $this->makeCompetition(['question_count' => $questions]);
@@ -28,199 +35,247 @@ class AnswerSubmissionTest extends TestCase
 
     public function test_a_correct_answer_is_graded_correct(): void
     {
-        [, $participation, $service] = $this->startedContestant();
+        [$competition, $contestant, $service] = $this->startedContestant();
 
-        $question = $service->currentQuestion($participation);
-        $key = CompetitionQuestion::query()->find($question['question_id'])->correct_option;
+        $service->submitAnswer($contestant, $competition, null, $this->correctOptionAt($contestant, 0));
 
-        $service->submitAnswer($participation->fresh(), $question['question_id'], $key);
-
-        $row = CompetitionUserQuestion::query()->where('sequence', 1)->first();
-        $this->assertTrue($row->is_correct);
-        $this->assertSame($key, $row->selected_option);
-        $this->assertFalse($row->timed_out);
+        $this->assertSame(1, $contestant->refresh()->correct_answers);
+        $this->assertSame(1, $contestant->answered_questions);
     }
 
     public function test_a_wrong_answer_is_graded_incorrect(): void
     {
-        [, $participation, $service] = $this->startedContestant();
+        [$competition, $contestant, $service] = $this->startedContestant();
 
-        $question = $service->currentQuestion($participation);
-        $key = CompetitionQuestion::query()->find($question['question_id'])->correct_option;
-        $wrong = collect(['A', 'B', 'C', 'D'])->reject(fn ($o) => $o === $key)->first();
+        $service->submitAnswer($contestant, $competition, null, $this->wrongOptionAt($contestant, 0));
 
-        $service->submitAnswer($participation->fresh(), $question['question_id'], $wrong);
+        $this->assertSame(0, $contestant->refresh()->correct_answers);
+        $this->assertSame(1, $contestant->answered_questions);
+    }
 
-        $row = CompetitionUserQuestion::query()->where('sequence', 1)->first();
-        $this->assertFalse($row->is_correct);
-        $this->assertSame($wrong, $row->selected_option);
+    public function test_grading_uses_the_question_at_the_current_index(): void
+    {
+        [$competition, $contestant, $service] = $this->startedContestant();
+
+        // Position 1's correct option, submitted at position 0. It must be
+        // graded against position 0's question, not position 1's.
+        $service->submitAnswer($contestant, $competition, null, $this->correctOptionAt($contestant, 0));
+        $service->submitAnswer($contestant->refresh(), $competition, null, $this->correctOptionAt($contestant, 1));
+
+        $this->assertSame(2, $contestant->refresh()->correct_answers);
+        $this->assertSame($this->correctOptionAt($contestant, 0), $contestant->answerAt(0));
+        $this->assertSame($this->correctOptionAt($contestant, 1), $contestant->answerAt(1));
     }
 
     public function test_the_response_does_not_tell_the_contestant_whether_they_were_right(): void
     {
-        [, $participation, $service] = $this->startedContestant();
+        [$competition, $contestant, $service] = $this->startedContestant();
 
-        $question = $service->currentQuestion($participation);
-        $key = CompetitionQuestion::query()->find($question['question_id'])->correct_option;
+        $outcome = $service->submitAnswer($contestant, $competition, null, $this->correctOptionAt($contestant, 0));
 
-        $outcome = $service->submitAnswer($participation->fresh(), $question['question_id'], $key);
-
-        // Returning correctness per answer would make the exam an oracle for
-        // the answer key.
+        $this->assertSame(['accepted', 'sequence', 'exam_status'], array_keys($outcome));
         $this->assertArrayNotHasKey('is_correct', $outcome);
         $this->assertArrayNotHasKey('correct_option', $outcome);
     }
 
-    public function test_answering_advances_to_the_next_question(): void
+    public function test_answering_advances_the_index(): void
     {
-        [, $participation, $service] = $this->startedContestant();
+        [$competition, $contestant, $service] = $this->startedContestant();
 
-        $first = $service->currentQuestion($participation);
-        $service->submitAnswer($participation->fresh(), $first['question_id'], 'A');
-        $second = $service->currentQuestion($participation->fresh());
+        $this->assertSame(0, $contestant->current_question);
 
-        $this->assertSame(2, $second['sequence']);
-        $this->assertNotSame($first['question_id'], $second['question_id']);
+        $outcome = $service->submitAnswer($contestant, $competition, null, 'A');
+
+        $this->assertSame(1, $outcome['sequence'], 'sequence is the 1-based display of the answered index');
+        $this->assertSame(1, $contestant->refresh()->current_question);
     }
 
-    public function test_a_question_cannot_be_answered_twice(): void
+    public function test_a_position_cannot_be_answered_twice(): void
     {
-        [, $participation, $service] = $this->startedContestant();
+        [$competition, $contestant, $service] = $this->startedContestant();
 
-        $question = $service->currentQuestion($participation);
-        $service->submitAnswer($participation->fresh(), $question['question_id'], 'A');
+        $firstQuestionId = $contestant->questionIdAt(0);
+        $service->submitAnswer($contestant, $competition, $firstQuestionId, 'A');
+
+        // The same submission replayed: the index has moved, so the question it
+        // names is no longer the one awaiting an answer.
+        $this->expectException(ExamException::class);
+        $this->expectExceptionMessageMatches('//');
 
         try {
-            $service->submitAnswer($participation->fresh(), $question['question_id'], 'B');
-            $this->fail('a finalised question must not accept a second answer');
+            $service->submitAnswer($contestant->refresh(), $competition, $firstQuestionId, 'B');
+        } catch (ExamException $e) {
+            $this->assertSame('question_not_available', $e->reason);
+            $this->assertSame('A', $contestant->refresh()->answerAt(0), 'the replay overwrote the answer');
+            $this->assertSame(1, $contestant->current_question);
+
+            throw $e;
+        }
+    }
+
+    public function test_a_client_cannot_choose_which_question_it_answers(): void
+    {
+        [$competition, $contestant, $service] = $this->startedContestant();
+
+        // Naming a question further down their own paper must not jump there.
+        try {
+            $service->submitAnswer($contestant, $competition, $contestant->questionIdAt(3), 'A');
+            $this->fail('the client was allowed to pick its own question');
         } catch (ExamException $e) {
             $this->assertSame('question_not_available', $e->reason);
         }
 
-        $this->assertSame('A', CompetitionUserQuestion::query()->where('sequence', 1)->value('selected_option'));
+        $this->assertSame(0, $contestant->refresh()->current_question);
+        $this->assertSame(str_repeat(CompetitionUser::NO_ANSWER, 5), $contestant->answers);
     }
 
     public function test_a_contestant_cannot_answer_a_question_from_another_contestants_paper(): void
     {
-        // A bank of 12 for papers of 5, so the two papers are genuinely
-        // different subsets and a question always exists on theirs but not on
-        // mine. Nothing here depends on how the shuffle happened to fall.
-        $competition = $this->makeCompetition(['question_count' => 5]);
-        $this->makeQuestions($competition, 12);
-        $mine = $this->makeContestant($competition);
+        [$competition, $mine, $service] = $this->startedContestant(5);
+
         $theirs = $this->makeContestant($competition);
-        $service = app(CompetitionExamService::class);
-
-        $service->startOrResume($mine->user, $competition);
         $service->startOrResume($theirs->user, $competition);
-        $service->currentQuestion($mine->fresh());
+        $theirs->refresh();
 
-        $myPaper = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $mine->id)->pluck('competition_question_id')->all();
-
-        $onlyTheirs = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $theirs->id)
-            ->whereNotIn('competition_question_id', $myPaper)
-            ->value('competition_question_id');
-
-        $this->assertNotNull($onlyTheirs, 'the two papers must differ for this test to mean anything');
+        // A question id that is on their paper at a position that is not mine.
+        $foreign = collect($theirs->order())
+            ->first(fn (int $id) => $id !== $mine->questionIdAt(0));
 
         try {
-            $service->submitAnswer($mine->fresh(), $onlyTheirs, 'A');
-            $this->fail('answering another paper must be refused');
+            $service->submitAnswer($mine, $competition, $foreign, 'A');
+            $this->fail('a foreign question id was accepted');
         } catch (ExamException $e) {
-            // Identical message whether the question belongs to someone else or
-            // simply is not current — no oracle.
             $this->assertSame('question_not_available', $e->reason);
         }
 
-        $this->assertNull(CompetitionUserQuestion::query()
-            ->where('competition_user_id', $theirs->id)
-            ->where('sequence', 1)->value('selected_option'));
+        $this->assertSame(0, $mine->refresh()->current_question);
+        $this->assertSame(0, $theirs->refresh()->current_question);
     }
 
     public function test_a_fabricated_question_id_is_refused(): void
     {
-        [, $participation, $service] = $this->startedContestant();
-        $service->currentQuestion($participation);
+        [$competition, $contestant, $service] = $this->startedContestant();
 
         $this->expectException(ExamException::class);
-        $service->submitAnswer($participation->fresh(), 999999, 'A');
+
+        $service->submitAnswer($contestant, $competition, 999_999, 'A');
     }
 
-    public function test_answering_the_last_question_finalises_the_exam_with_recomputed_totals(): void
+    public function test_an_answer_after_the_window_closes_is_refused_and_the_position_is_spent(): void
     {
-        [, $participation, $service] = $this->startedContestant(3);
+        [$competition, $contestant, $service] = $this->startedContestant();
 
-        $expectedCorrect = 0;
+        $this->travel(41)->seconds();
 
-        for ($i = 0; $i < 3; $i++) {
-            $question = $service->currentQuestion($participation->fresh());
-            $key = CompetitionQuestion::query()->find($question['question_id'])->correct_option;
-            // Answer the first two correctly, the last one wrong.
-            $answer = $i < 2 ? $key : collect(['A', 'B', 'C', 'D'])->reject(fn ($o) => $o === $key)->first();
-            $expectedCorrect += $i < 2 ? 1 : 0;
-            $service->submitAnswer($participation->fresh(), $question['question_id'], $answer);
+        try {
+            $service->submitAnswer($contestant, $competition, $contestant->questionIdAt(0), 'A');
+            $this->fail('a late answer was accepted');
+        } catch (ExamException $e) {
+            $this->assertSame('question_expired', $e->reason);
         }
 
-        $participation->refresh();
-        $this->assertSame(CompetitionUser::EXAM_COMPLETED, $participation->exam_status);
-        $this->assertNotNull($participation->completed_at);
-        $this->assertSame($expectedCorrect, $participation->correct_answers);
-        $this->assertSame(3, $participation->answered_questions);
+        $contestant->refresh();
 
-        // The stored aggregate must equal the rows it summarises.
-        $actual = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $participation->id)->where('is_correct', true)->count();
-        $this->assertSame($actual, $participation->correct_answers);
+        $this->assertNull($contestant->answerAt(0), 'a late answer was recorded');
+        $this->assertGreaterThanOrEqual(1, $contestant->current_question);
+        $this->assertSame(0, $contestant->answered_questions);
     }
 
-    public function test_finalisation_is_idempotent(): void
+    public function test_answering_the_last_position_finalises_the_exam_with_recomputed_totals(): void
     {
-        [, $participation, $service] = $this->startedContestant(2);
+        [$competition, $contestant, $service] = $this->startedContestant(5);
 
-        for ($i = 0; $i < 2; $i++) {
-            $q = $service->currentQuestion($participation->fresh());
-            $service->submitAnswer($participation->fresh(), $q['question_id'], 'A');
+        for ($position = 0; $position < 5; $position++) {
+            $contestant->refresh();
+            $option = $position % 2 === 0
+                ? $this->correctOptionAt($contestant, $position)
+                : $this->wrongOptionAt($contestant, $position);
+
+            $service->submitAnswer($contestant, $competition, null, $option);
         }
 
-        $completedAt = $participation->fresh()->completed_at;
-        $correct = $participation->fresh()->correct_answers;
+        $contestant->refresh();
 
-        $this->travel(1)->minute();
+        $this->assertSame(CompetitionUser::EXAM_COMPLETED, $contestant->exam_status);
+        $this->assertNotNull($contestant->completed_at);
+        $this->assertSame(5, $contestant->current_question);
+        $this->assertSame(5, $contestant->answered_questions);
+        $this->assertSame(3, $contestant->correct_answers, 'positions 0, 2 and 4 were answered correctly');
+        $this->assertStringNotContainsString(CompetitionUser::NO_ANSWER, $contestant->answers);
+    }
 
-        // Repeated reads must not move the finish line or the score.
-        $this->assertNull($service->currentQuestion($participation->fresh()));
-        $this->assertNull($service->currentQuestion($participation->fresh()));
+    public function test_the_stored_totals_are_recomputed_rather_than_trusted(): void
+    {
+        [$competition, $contestant, $service] = $this->startedContestant(5);
 
-        $this->assertEquals($completedAt, $participation->fresh()->completed_at);
-        $this->assertSame($correct, $participation->fresh()->correct_answers);
+        for ($position = 0; $position < 4; $position++) {
+            $service->submitAnswer($contestant->refresh(), $competition, null, $this->correctOptionAt($contestant->refresh(), $position));
+        }
+
+        // Corrupt the running counters just before the finalising answer.
+        $contestant->refresh()->forceFill(['correct_answers' => 99, 'answered_questions' => 99])->save();
+
+        $service->submitAnswer($contestant->refresh(), $competition, null, $this->correctOptionAt($contestant->refresh(), 4));
+
+        $contestant->refresh();
+
+        $this->assertSame(5, $contestant->correct_answers, 'the totals were trusted rather than recomputed');
+        $this->assertSame(5, $contestant->answered_questions);
     }
 
     public function test_a_completed_exam_refuses_further_answers(): void
     {
-        [, $participation, $service] = $this->startedContestant(1);
+        [$competition, $contestant, $service] = $this->startedContestant(5);
 
-        $q = $service->currentQuestion($participation->fresh());
-        $service->submitAnswer($participation->fresh(), $q['question_id'], 'A');
+        for ($position = 0; $position < 5; $position++) {
+            $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
+        }
 
-        $this->expectException(ExamException::class);
-        $service->submitAnswer($participation->fresh(), $q['question_id'], 'B');
+        try {
+            $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
+            $this->fail('a completed exam accepted another answer');
+        } catch (ExamException $e) {
+            $this->assertSame('exam_completed', $e->reason);
+        }
     }
 
-    public function test_timed_out_questions_count_as_unanswered_but_still_finalise_the_paper(): void
+    public function test_skipped_positions_count_as_unanswered_but_still_finalise_the_paper(): void
     {
-        [, $participation, $service] = $this->startedContestant(2);
+        [$competition, $contestant, $service] = $this->startedContestant(5);
 
-        $first = $service->currentQuestion($participation->fresh());
-        $service->submitAnswer($participation->fresh(), $first['question_id'], 'A');
+        $service->submitAnswer($contestant, $competition, null, $this->correctOptionAt($contestant, 0));
 
-        $service->currentQuestion($participation->fresh());
-        $this->travel(41)->seconds();
-        $this->assertNull($service->currentQuestion($participation->fresh()));
+        // Two windows elapse untouched, then the contestant comes back.
+        $this->travel(85)->seconds();
 
-        $participation->refresh();
-        $this->assertSame(CompetitionUser::EXAM_COMPLETED, $participation->exam_status);
-        $this->assertSame(1, $participation->answered_questions, 'a timeout is not an answer');
+        $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
+        $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
+
+        $contestant->refresh();
+
+        $this->assertSame(CompetitionUser::EXAM_COMPLETED, $contestant->exam_status);
+        $this->assertSame(3, $contestant->answered_questions, 'the two elapsed positions were counted as answered');
+        $this->assertSame(CompetitionUser::NO_ANSWER, substr($contestant->answers, 1, 1));
+        $this->assertSame(CompetitionUser::NO_ANSWER, substr($contestant->answers, 2, 1));
+    }
+
+    public function test_finalisation_is_idempotent(): void
+    {
+        [$competition, $contestant, $service] = $this->startedContestant(5);
+
+        for ($position = 0; $position < 5; $position++) {
+            $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
+        }
+
+        $completedAt = $contestant->refresh()->completed_at;
+        $correct = $contestant->correct_answers;
+
+        $service->currentQuestion($contestant->refresh(), $competition);
+        $service->startOrResume($contestant->user, $competition);
+
+        $contestant->refresh();
+
+        $this->assertEquals($completedAt, $contestant->completed_at);
+        $this->assertSame($correct, $contestant->correct_answers);
     }
 }

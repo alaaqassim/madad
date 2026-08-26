@@ -6,6 +6,8 @@ use App\Models\Competition;
 use App\Models\CompetitionQuestion;
 use App\Models\CompetitionUser;
 use App\Models\User;
+use App\Services\Competition\QuestionOrderService;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Hash;
 
 /**
@@ -96,5 +98,70 @@ trait MadadFixtures
             'correct_answers' => 0,
             'answered_questions' => 0,
         ]);
+    }
+
+    /**
+     * Give a contestant a persisted question order without starting the clock.
+     *
+     * @return list<int> the order that was persisted
+     */
+    protected function giveOrder(CompetitionUser $contestant, Competition $competition): array
+    {
+        $order = app(QuestionOrderService::class)->build($competition);
+
+        $contestant->forceFill([
+            'question_order' => $order,
+            'answers' => str_repeat(CompetitionUser::NO_ANSWER, count($order)),
+            'current_question' => 0,
+        ])->save();
+
+        return $order;
+    }
+
+    /**
+     * Put a contestant at a position on a timeline of our choosing.
+     *
+     * `$startedAt` anchors the whole exam; `$arrivedAt` is when they reached
+     * $index. The defaults place them on the fixed grid, exactly where a
+     * contestant who used every full window would be.
+     */
+    protected function placeAt(
+        CompetitionUser $contestant,
+        Competition $competition,
+        int $index,
+        ?Carbon $startedAt = null,
+        ?Carbon $arrivedAt = null,
+    ): CompetitionUser {
+        if ($contestant->order() === []) {
+            $this->giveOrder($contestant, $competition);
+        }
+
+        $startedAt ??= now()->subSeconds($index * $competition->seconds_per_question);
+        $arrivedAt ??= $startedAt->copy()->addSeconds($index * $competition->seconds_per_question);
+
+        $contestant->forceFill([
+            'exam_status' => CompetitionUser::EXAM_IN_PROGRESS,
+            'started_at' => $startedAt,
+            'current_question' => $index,
+            'current_question_started_at' => $arrivedAt,
+        ])->save();
+
+        return $contestant->refresh();
+    }
+
+    /** The option that would be marked correct at a position on this paper. */
+    protected function correctOptionAt(CompetitionUser $contestant, int $index): string
+    {
+        return CompetitionQuestion::query()
+            ->findOrFail($contestant->questionIdAt($index))
+            ->correct_option;
+    }
+
+    /** An option that would be marked wrong at a position on this paper. */
+    protected function wrongOptionAt(CompetitionUser $contestant, int $index): string
+    {
+        $correct = $this->correctOptionAt($contestant, $index);
+
+        return array_values(array_diff(CompetitionQuestion::OPTIONS, [$correct]))[0];
     }
 }

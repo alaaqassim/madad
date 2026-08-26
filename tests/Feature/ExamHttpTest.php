@@ -4,7 +4,6 @@ namespace Tests\Feature;
 
 use App\Models\Competition;
 use App\Models\CompetitionQuestion;
-use App\Models\CompetitionUserQuestion;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
@@ -147,10 +146,13 @@ class ExamHttpTest extends TestCase
             'expires_at' => now()->addYear()->toIso8601String(),
         ])->assertOk();
 
-        $row = CompetitionUserQuestion::query()->where('sequence', 1)->first();
-        $this->assertFalse($row->is_correct, 'the server graded the answer, not the client');
-        $this->assertTrue($row->answered_at->isToday());
-        $this->assertSame(0, $participation->fresh()->correct_answers);
+        $participation->refresh();
+
+        // The server graded the answer, not the client: the option recorded is
+        // the wrong one that was actually sent, and the score reflects it.
+        $this->assertSame($wrong, $participation->answerAt(0));
+        $this->assertSame(1, $participation->current_question, 'the client dictated the position');
+        $this->assertSame(0, $participation->correct_answers);
     }
 
     public function test_a_contestant_without_a_participation_is_refused(): void

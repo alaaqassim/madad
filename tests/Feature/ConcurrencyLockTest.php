@@ -94,7 +94,6 @@ class ConcurrencyLockTest extends TestCase
         DB::statement('SET FOREIGN_KEY_CHECKS=0');
 
         foreach ([
-            'competition_user_questions',
             'competition_users',
             'competition_questions',
             'competitions',

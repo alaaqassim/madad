@@ -4,7 +4,6 @@ namespace Tests\Feature;
 
 use App\Models\Competition;
 use App\Models\CompetitionUser;
-use App\Models\CompetitionUserQuestion;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
@@ -214,13 +213,11 @@ class ErrorContractTest extends TestCase
         $this->actingAs($theirs->user)->postJson('/api/exam/start')->assertOk();
         $this->actingAs($mine->user)->postJson('/api/exam/start')->assertOk();
 
-        $myPaper = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $mine->id)->pluck('competition_question_id')->all();
+        $myPaper = $mine->refresh()->order();
 
-        $onlyTheirs = CompetitionUserQuestion::query()
-            ->where('competition_user_id', $theirs->id)
-            ->whereNotIn('competition_question_id', $myPaper)
-            ->value('competition_question_id');
+        $onlyTheirs = collect($theirs->refresh()->order())
+            ->reject(fn (int $id) => in_array($id, $myPaper, true))
+            ->first();
 
         $this->assertNotNull($onlyTheirs, 'the two papers must differ for this test to mean anything');
 

@@ -32,7 +32,7 @@ class ResultsTest extends TestCase
         $competition = $this->makeCompetition(['show_result' => false]);
         $participation = $this->completedContestant($competition, 63);
 
-        $payload = app(CompetitionExamService::class)->result($participation);
+        $payload = app(CompetitionExamService::class)->result($participation, $competition);
 
         $this->assertFalse($payload['show_result']);
         $this->assertArrayNotHasKey('correct_answers', $payload, 'the score must not be sent at all, not merely hidden by the client');
@@ -44,7 +44,7 @@ class ResultsTest extends TestCase
         $competition = $this->makeCompetition(['show_result' => true, 'question_count' => 75]);
         $participation = $this->completedContestant($competition, 63);
 
-        $payload = app(CompetitionExamService::class)->result($participation);
+        $payload = app(CompetitionExamService::class)->result($participation, $competition);
 
         $this->assertTrue($payload['show_result']);
         $this->assertSame(63, $payload['correct_answers']);
@@ -60,7 +60,7 @@ class ResultsTest extends TestCase
             'correct_answers' => 12,
         ])->save();
 
-        $payload = app(CompetitionExamService::class)->result($participation->fresh());
+        $payload = app(CompetitionExamService::class)->result($participation->fresh(), $competition);
 
         $this->assertArrayNotHasKey('correct_answers', $payload);
     }
