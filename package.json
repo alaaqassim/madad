@@ -6,7 +6,8 @@
         "build": "vite build",
         "dev": "vite",
         "test": "vitest run",
-        "test:watch": "vitest"
+        "test:watch": "vitest",
+        "build:demo": "vite build --config vite.demo.config.js"
     },
     "devDependencies": {
         "@tailwindcss/vite": "^4.0.0",

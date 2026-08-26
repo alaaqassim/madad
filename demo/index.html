@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<!--
+    The standalone demo shell.
+
+    A near-copy of resources/views/app.blade.php with the Blade directives
+    replaced by a plain module script, so the contestant UI can be built as a
+    static site and served from GitHub Pages. It is the SAME Vue application —
+    only the way the assets are referenced differs.
+
+    The build that uses this file sets VITE_MADAD_DEMO, which installs the
+    development mock journey. `npm run build` — the bundle Laravel serves — does
+    not set it and still contains no mock at all.
+-->
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#14544a">
+    <meta name="robots" content="noindex">
+    <title>مداد الغدير — المسابقة الطلابيّة</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Noto+Naskh+Arabic:wght@500;600;700&display=swap"
+        rel="stylesheet"
+    >
+
+    <link rel="stylesheet" href="../resources/css/app.css">
+    <script type="module" src="../resources/js/app.js"></script>
+</head>
+<body>
+    <a class="madad-skip-link" href="#madad-main">تخطّي إلى المحتوى</a>
+    <div id="app"></div>
+</body>
+</html>

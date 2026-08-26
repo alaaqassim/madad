@@ -23,13 +23,17 @@ const exam = useCompetitionExam();
 
 onMounted(async () => {
     /*
-     * Development mock journey. `import.meta.env.DEV` is a literal false in a
-     * production build, so this branch — and the chunk it would import — is
-     * eliminated: the shipped app contains no mock adapter, no credentials, no
-     * question text and no developer controls. It installs before boot() so
-     * the very first /competition/status call is already answered by the mock.
+     * The mock journey, in the two places it belongs: the dev server, and the
+     * static demo built by vite.demo.config.js for review from a link.
+     *
+     * Both operands fold to a literal false in the Laravel production build —
+     * DEV is false, and VITE_MADAD_DEMO is defined only by the demo config —
+     * so this branch and the chunk it would import are eliminated. The shipped
+     * app contains no mock adapter, no credentials, no question text and no
+     * developer controls. It installs before boot() so the very first
+     * /competition/status call is already answered by the mock.
      */
-    if (import.meta.env.DEV) {
+    if (import.meta.env.DEV || import.meta.env.VITE_MADAD_DEMO === 'true') {
         const { installMockJourney } = await import('./dev/installMockJourney');
 
         installMockJourney();

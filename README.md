@@ -1,59 +1,76 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# مداد الغدير — المسابقة الطلابيّة
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+## ▶ العرض المباشر
 
-## About Laravel
+### **https://alaaqassim.github.io/madad/**
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+افتح الرابط وسجّل الدخول بهذا الحساب:
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+| | |
+|---|---|
+| **البريد الإلكتروني** | `contestant0001@madad.test` |
+| **كلمة المرور** | `Madad@123456` |
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+ثمّ اضغط **«ابدأ المسابقة»** لتمرّ بتجربة المتسابق كاملة: عشرة أسئلة، مؤقّت أربعين ثانية لكلّ سؤال، ثمّ صفحة إنهاء المسابقة.
 
-## Learning Laravel
+> العرض يعمل على محاكٍ للواجهة الخلفيّة داخل المتصفّح — لا خادم، ولا قاعدة بيانات، ولا بريد. بيانات الدخول أعلاه بيانات محاكاة للعرض فقط، ولا تعمل مع أيّ نظام حقيقي.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+### خيارات إضافيّة للمراجعة
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+| الرابط | ماذا يعرض |
+|---|---|
+| [`?fast=1`](https://alaaqassim.github.io/madad/?fast=1) | ثماني ثوانٍ لكلّ سؤال بدل أربعين، لمشاهدة انتهاء الوقت بسرعة |
+| [`?showResult=1`](https://alaaqassim.github.io/madad/?showResult=1) | إظهار النتيجة في نهاية المسابقة |
+| [`?closed=1`](https://alaaqassim.github.io/madad/?closed=1) | حالة «انتهت المسابقة» |
 
-## Laravel Sponsors
+---
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+## المشروع
 
-### Premium Partners
+منصّة المسابقة الطلابيّة حول كتاب «الإمام علي صوت العدالة الإنسانيّة» لجورج جرداق — المرحلة الأولى.
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+**التقنيّات:** Laravel 12 · Vue 3 · Vite · MySQL
 
-## Contributing
+### ما تحتويه المرحلة الأولى
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+- **الواجهة الخلفيّة** — محرّك المسابقة، توقيت الأسئلة على الخادم، تسجيل الإجابات، احتساب النتائج، تزويد حسابات المتسابقين وإرسال بياناتهم، واستخراج النتائج. العمليّات التشغيليّة كلّها أوامر `artisan madad:*` ولا واجهة عامّة لها.
+- **واجهة المتسابق** — الدخول، حالة المسابقة، شاشة البدء والاستئناف، شاشة السؤال والمؤقّت، ومعالجة انقطاع الشبكة وانتهاء الوقت، ثمّ صفحة الإنهاء بنتيجة أو بدونها.
 
-## Code of Conduct
+### قواعد أساسيّة في التصميم
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+- **الخادم هو المرجع في الوقت.** المؤقّت في المتصفّح للعرض فقط؛ موعد انتهاء السؤال يُكتب مرّة واحدة على الخادم ولا يُمدَّد، فتحديث الصفحة لا يمنح وقتًا إضافيًّا.
+- **لا تُكشف صحّة الإجابة أثناء الامتحان.** مفتاح الإجابات لا يغادر الخادم إطلاقًا، ولا تعرض الواجهة أيّ إشارة إلى صواب أو خطأ.
+- **النتيجة يقرّرها الخادم.** إن كانت المسابقة مضبوطة على إخفاء النتيجة فالرقم لا يُرسَل أصلًا، فلا يمكن للواجهة أن تسرّبه.
 
-## Security Vulnerabilities
+---
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+## التشغيل محلّيًّا
 
-## License
+```bash
+composer install
+npm install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+npm run dev          # في نافذة
+php artisan serve    # في نافذة أخرى
+```
+
+ثمّ افتح `http://127.0.0.1:8000`. خادم التطوير يعمل على المحاكي نفسه المستخدَم في العرض المباشر، فلا حاجة إلى بيانات حقيقيّة للمراجعة البصريّة.
+
+### الاختبارات
+
+```bash
+php artisan test     # الواجهة الخلفيّة
+npm test             # الواجهة الأماميّة (71 اختبارًا)
+```
+
+### البناء
+
+```bash
+npm run build        # بناء الإنتاج الذي يخدمه Laravel — لا يحتوي أيّ كود محاكاة
+npm run build:demo   # بناء العرض الثابت المنشور على GitHub Pages
+```
+
+كود المحاكاة كلّه تحت `resources/js/dev/` ويُستبعد من بناء الإنتاج بالكامل: لا بيانات دخول، ولا نصوص أسئلة، ولا أدوات مطوّرين.
