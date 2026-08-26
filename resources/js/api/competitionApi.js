@@ -1,5 +1,4 @@
 import http from './http';
-import { createMockApi, SCENARIOS } from './mockApi';
 
 /*
 | The contestant API surface, one function per backend route.
@@ -38,25 +37,30 @@ const realApi = {
 };
 
 /*
-| Mock switch. Two opt-in routes to the mock, and only these two:
+| The live implementation, swappable exactly once and only in development.
 |
-|   * VITE_MADAD_MOCK_API=true — build or dev-serve the whole app on the mock.
-|   * ?preview=<scenario>      — DEV BUILDS ONLY. `import.meta.env.DEV` is a
-|                                literal false in a production build, so the
-|                                query string is not even read there and the
-|                                branch is eliminated. A deployed Madad cannot
-|                                be talked into the mock by a URL.
-|
-| Either way it is the same contract; the mock does not get one of its own.
+| The default export is a stable forwarder rather than the chosen object, so a
+| composable can capture it during setup while the development mock is still
+| being loaded asynchronously. In a production build nothing ever calls
+| setApi(), so `impl` is realApi from first byte to last — and because the mock
+| now lives entirely under resources/js/dev/, none of it is in the graph at all.
 */
-export const activeScenario = import.meta.env?.DEV
-    ? new URLSearchParams(window.location.search).get('preview')
-    : null;
+let impl = realApi;
 
-const api =
-    activeScenario !== null || import.meta.env?.VITE_MADAD_MOCK_API === 'true'
-        ? createMockApi(SCENARIOS[activeScenario]?.mock)
-        : realApi;
+/** DEV ONLY. Install an alternative implementation of the same contract. */
+export function setApi(next) {
+    impl = next ?? realApi;
+}
+
+const api = {
+    login: (credentials) => impl.login(credentials),
+    logout: () => impl.logout(),
+    status: () => impl.status(),
+    start: () => impl.start(),
+    current: () => impl.current(),
+    answer: (questionId, selectedOption) => impl.answer(questionId, selectedOption),
+    result: () => impl.result(),
+};
 
 export default api;
 export { realApi };

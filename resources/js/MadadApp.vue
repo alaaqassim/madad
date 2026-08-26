@@ -22,19 +22,20 @@ import { copy } from './i18n/messages';
 const exam = useCompetitionExam();
 
 onMounted(async () => {
-    await exam.boot();
-
     /*
-     * Development preview only. `import.meta.env.DEV` is a literal false in a
-     * production build, so this block — and the chunk it would import — is
-     * eliminated: the shipped app has no preview or debug surface. Without a
-     * ?preview= scenario the harness no-ops.
+     * Development mock journey. `import.meta.env.DEV` is a literal false in a
+     * production build, so this branch — and the chunk it would import — is
+     * eliminated: the shipped app contains no mock adapter, no credentials, no
+     * question text and no developer controls. It installs before boot() so
+     * the very first /competition/status call is already answered by the mock.
      */
     if (import.meta.env.DEV) {
-        const { runPreview } = await import('./dev/preview');
+        const { installMockJourney } = await import('./dev/installMockJourney');
 
-        await runPreview(exam);
+        installMockJourney();
     }
+
+    await exam.boot();
 });
 </script>
 
