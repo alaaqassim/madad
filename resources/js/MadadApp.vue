@@ -21,8 +21,20 @@ import { copy } from './i18n/messages';
 */
 const exam = useCompetitionExam();
 
-onMounted(() => {
-    void exam.boot();
+onMounted(async () => {
+    await exam.boot();
+
+    /*
+     * Development preview only. `import.meta.env.DEV` is a literal false in a
+     * production build, so this block — and the chunk it would import — is
+     * eliminated: the shipped app has no preview or debug surface. Without a
+     * ?preview= scenario the harness no-ops.
+     */
+    if (import.meta.env.DEV) {
+        const { runPreview } = await import('./dev/preview');
+
+        await runPreview(exam);
+    }
 });
 </script>
 

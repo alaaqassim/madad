@@ -1,5 +1,5 @@
 import http from './http';
-import { createMockApi } from './mockApi';
+import { createMockApi, SCENARIOS } from './mockApi';
 
 /*
 | The contestant API surface, one function per backend route.
@@ -38,13 +38,25 @@ const realApi = {
 };
 
 /*
-| Mock switch.
+| Mock switch. Two opt-in routes to the mock, and only these two:
 |
-| `VITE_MADAD_MOCK_API=true` swaps in an adapter that speaks the identical
-| contract, for working on screens while the backend session is mid-flight.
-| There is one contract; the mock does not get its own.
+|   * VITE_MADAD_MOCK_API=true — build or dev-serve the whole app on the mock.
+|   * ?preview=<scenario>      — DEV BUILDS ONLY. `import.meta.env.DEV` is a
+|                                literal false in a production build, so the
+|                                query string is not even read there and the
+|                                branch is eliminated. A deployed Madad cannot
+|                                be talked into the mock by a URL.
+|
+| Either way it is the same contract; the mock does not get one of its own.
 */
-const api = import.meta.env?.VITE_MADAD_MOCK_API === 'true' ? createMockApi() : realApi;
+export const activeScenario = import.meta.env?.DEV
+    ? new URLSearchParams(window.location.search).get('preview')
+    : null;
+
+const api =
+    activeScenario !== null || import.meta.env?.VITE_MADAD_MOCK_API === 'true'
+        ? createMockApi(SCENARIOS[activeScenario]?.mock)
+        : realApi;
 
 export default api;
 export { realApi };
