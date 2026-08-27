@@ -71,7 +71,14 @@ jobs:
           DB_DATABASE: madad_test
           DB_USERNAME: root
           DB_PASSWORD: root
-        run: php artisan test
+        run: php artisan test --log-junit storage/junit.xml
+
+      # A red build otherwise says only "exit code 1" on the summary page,
+      # with the reason buried in the raw log. This puts every failure on
+      # the line it happened, where it is visible without opening the log.
+      - name: Annotate the failures
+        if: failure()
+        run: php .github/scripts/annotate-failures.php storage/junit.xml
 
   frontend:
     name: Frontend (Node 24)
