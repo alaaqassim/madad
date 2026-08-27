@@ -136,7 +136,7 @@ final class PerfProbe
     {
         return match (true) {
             str_contains($sql, '`sessions`') => 'جلسة الدخول',
-            str_contains($sql, '`cache`') => 'فحص الحماية',
+            str_contains($sql, '`cache`') => 'تحديد معدّل الطلبات',
             default => 'بيانات المسابقة',
         };
     }
@@ -144,7 +144,7 @@ final class PerfProbe
     /** @return list<string> The groups, in report order. */
     public static function groups(): array
     {
-        return ['بيانات المسابقة', 'جلسة الدخول', 'فحص الحماية'];
+        return ['بيانات المسابقة', 'جلسة الدخول', 'تحديد معدّل الطلبات'];
     }
 }
 

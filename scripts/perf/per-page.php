@@ -130,11 +130,11 @@ printf("  الوسيط (p50)      : %.2f ms\n", $everything[(int) ($n * 0.5)]);
 printf("  p95               : %.2f ms\n", $everything[(int) ($n * 0.95)]);
 printf("  استعلامات >= 5ms  : %d من %d\n", count(array_filter($everything, fn ($ms) => $ms >= 5)), $n);
 
-$infra = $grand['جلسة الدخول']['ms'] + $grand['فحص الحماية']['ms'];
+$infra = $grand['جلسة الدخول']['ms'] + $grand['تحديد معدّل الطلبات']['ms'];
 
 printf(
-    "\n  الجلسة + الحماية  : %d استعلامًا، %.2f ms  (%.0f%% من زمن القاعدة)\n",
-    $grand['جلسة الدخول']['n'] + $grand['فحص الحماية']['n'],
+    "\n  الجلسة + تحديد المعدّل  : %d استعلامًا، %.2f ms  (%.0f%% من زمن القاعدة)\n",
+    $grand['جلسة الدخول']['n'] + $grand['تحديد معدّل الطلبات']['n'],
     $infra,
     100 * $infra / $allMs,
 );

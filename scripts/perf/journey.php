@@ -107,9 +107,15 @@ $grand = array_fill_keys(PerfProbe::groups(), ['n' => 0, 'ms' => 0.0]);
 $wallAll = 0.0;
 $answers = [];
 
-echo "\nكلّ الأرقام زمن بالمللي ثانية.\n\n";
-printf("%-44s %5s %8s %8s %8s %9s\n", 'الخطوة', 'HTTP', 'المسابقة', 'الجلسة', 'الحماية', 'المجموع');
-echo str_repeat('-', 92), "\n";
+// The classification is stated in the report itself: a reader can check which
+// query landed in which column instead of taking the label on trust.
+echo "\nكلّ الأرقام زمن بالمللي ثانية. التصنيف بالجدول الذي يمسّه الاستعلام:\n";
+echo "  المسابقة      = competition_settings, competition_users, competition_questions, users\n";
+echo "  الجلسة        = sessions\n";
+echo "  تحديد المعدّل = cache  (عدّاد Rate Limiter)\n\n";
+
+printf("%-44s %5s %10s %8s %13s %9s\n", 'الخطوة', 'HTTP', 'المسابقة', 'الجلسة', 'تحديد المعدّل', 'المجموع');
+echo str_repeat('-', 96), "\n";
 
 foreach ($steps as $row) {
     foreach (PerfProbe::groups() as $group) {
@@ -132,12 +138,12 @@ foreach ($steps as $row) {
     }
 
     printf(
-        "%-44s %5d %8.1f %8.1f %8.1f %9.1f\n",
+        "%-44s %5d %10.1f %8.1f %13.1f %9.1f\n",
         $row['label'],
         $row['status'],
         $row['split']['بيانات المسابقة']['ms'],
         $row['split']['جلسة الدخول']['ms'],
-        $row['split']['فحص الحماية']['ms'],
+        $row['split']['تحديد معدّل الطلبات']['ms'],
         $row['ms'],
     );
 

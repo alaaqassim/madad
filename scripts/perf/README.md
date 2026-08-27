@@ -64,7 +64,7 @@ Queries are split three ways, and the split is the point:
 |---|---|
 | بيانات المسابقة | The work the exam needs: settings, contestant, questions, recording answers |
 | جلسة الدخول | Keeping the contestant logged in - the `sessions` table |
-| فحص الحماية | The rate-limit counter that stops password guessing and request floods - the `cache` table |
+| تحديد معدّل الطلبات | The rate-limit counter that stops password guessing and request floods - the `cache` table |
 
 The last two are framework overhead, not exam logic. When they dominate, the fix
 is moving them out of the database rather than touching any query.
