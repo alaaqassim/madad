@@ -125,11 +125,21 @@ class OperationalCommandsTest extends TestCase
 
         $this->artisan('madad:status', ['--set' => 'closed'])
             ->expectsOutputToContain('CLOSING ENDS THE COMPETITION.')
-            ->expectsOutputToContain('2 contestant(s) are mid-exam right now and will be cut off.')
+            ->expectsOutputToContain('2 contestant(s) are mid-exam right now. They will be cut off, then SCORED AND')
             ->expectsConfirmation('Change the competition from open to closed?', 'yes')
             ->assertExitCode(0);
 
         $this->assertSame(CompetitionSettings::STATUS_CLOSED, $competition->fresh()->status);
+
+        // The confirmed rule: nobody is left mid-exam once the competition has
+        // ended. A contestant left in progress would lose the answers they had
+        // already given, because every result surface filters on `completed`.
+        $this->assertSame(
+            0,
+            CompetitionUser::query()->where('exam_status', CompetitionUser::EXAM_IN_PROGRESS)->count(),
+            'closing left contestants stranded in progress',
+        );
+        $this->assertSame(2, CompetitionUser::query()->where('exam_status', CompetitionUser::EXAM_COMPLETED)->count());
     }
 
     public function test_closing_can_be_declined(): void

@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
+use App\Services\Competition\CompetitionExamService;
 use App\Services\Competition\CompetitionGate;
 use App\Services\Competition\PreflightService;
 use Illuminate\Console\Command;
@@ -36,7 +37,7 @@ class MadadCompetitionStatus extends Command
 
     protected $description = 'Inspect the competition, and open or close the portal';
 
-    public function handle(CompetitionGate $gate, PreflightService $preflight): int
+    public function handle(CompetitionGate $gate, PreflightService $preflight, CompetitionExamService $exam): int
     {
         $competition = CompetitionSettings::current();
 
@@ -69,7 +70,7 @@ class MadadCompetitionStatus extends Command
 
         return match ($requested) {
             CompetitionSettings::STATUS_OPEN => $this->open($competition, $gate, $preflight),
-            CompetitionSettings::STATUS_CLOSED => $this->close($competition, $gate),
+            CompetitionSettings::STATUS_CLOSED => $this->close($competition, $gate, $exam),
             default => $this->setPlainly($competition, $requested),
         };
     }
@@ -149,12 +150,19 @@ class MadadCompetitionStatus extends Command
     }
 
     /**
-     * Closing ENDS the competition. Under the confirmed business rule this also
-     * stops contestants who are mid-exam from resuming, fetching another
-     * question, or submitting another answer — so the number of people it will
-     * cut off is stated before the question is asked.
+     * Closing ENDS the competition — for the portal AND for the record.
+     *
+     * Under the confirmed business rule it stops contestants who are mid-exam
+     * from resuming, fetching another question, or submitting another answer.
+     * And because their exam is then genuinely over, it SETTLES them: nobody is
+     * left `in_progress` once the competition has ended, because every result
+     * surface filters on `completed` and a contestant left in progress would
+     * silently lose the answers they had already given.
+     *
+     * That settlement is irreversible, so the number of people it will score
+     * and close is stated before the question is asked.
      */
-    private function close(CompetitionSettings $competition, CompetitionGate $gate): int
+    private function close(CompetitionSettings $competition, CompetitionGate $gate, CompetitionExamService $exam): int
     {
         $inProgress = DB::table('competition_users')
             ->where('exam_status', CompetitionUser::EXAM_IN_PROGRESS)
@@ -166,7 +174,8 @@ class MadadCompetitionStatus extends Command
         $this->warn('fetching another question, or submitting another answer. It is not a pause.');
 
         if ($inProgress > 0) {
-            $this->error("{$inProgress} contestant(s) are mid-exam right now and will be cut off.");
+            $this->error("{$inProgress} contestant(s) are mid-exam right now. They will be cut off, then SCORED AND");
+            $this->error('CLOSED so their answers count — which cannot be undone by re-opening the competition.');
         }
 
         if (! $this->confirmTransition($competition, CompetitionSettings::STATUS_CLOSED)) {
@@ -175,7 +184,20 @@ class MadadCompetitionStatus extends Command
 
         $previous = $competition->status;
         $gate->close($competition);
+
+        // Settle AFTER the gate is shut, so nobody can start between the two.
+        $settled = $exam->settleAll($competition->refresh(), includeUnfinished: true);
+
         $this->announce($competition, CompetitionSettings::STATUS_CLOSED, $previous);
+
+        if ($settled['settled'] > 0) {
+            $this->info("Settled {$settled['settled']} contestant(s) left mid-exam: {$settled['expired']} whose time"
+                ." had run out, {$settled['cut_short']} cut short by this closure.");
+        }
+
+        if ($settled['remaining'] > 0) {
+            $this->warn("{$settled['remaining']} contestant(s) are still in progress. Run `madad:settle --all`.");
+        }
 
         return self::SUCCESS;
     }

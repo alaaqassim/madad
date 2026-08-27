@@ -321,6 +321,96 @@ class CompetitionExamService
     }
 
     /**
+     * Settle every contestant still mid-exam.
+     *
+     * ─── WHY THIS EXISTS ────────────────────────────────────────────────────
+     * A contestant is normally settled by their own next request: answering the
+     * last question finalises on the spot, and a returning contestant whose
+     * time has run out is settled by settle() before the gate. Neither fires
+     * for someone who closes the browser at question 59 and never comes back —
+     * no request, no settlement — and every result surface filters on
+     * `exam_status = completed`, so that contestant vanishes from their own
+     * result and from the Top 100 with their answers sitting intact in the row.
+     *
+     * The confirmed rule is that NOBODY is left in progress once the exam is
+     * over. This is the sweep that guarantees it.
+     *
+     * Two kinds of contestant are settled, and they are counted separately
+     * because they mean different things to an operator:
+     *
+     *   expired    their own time ran out — the paper, the allowance or the
+     *              window. reconcile() settles them at the moment it actually
+     *              happened, which is what the duration tie-break needs.
+     *   cut short  time had NOT run out; the competition was closed under them.
+     *              Their exam ended AT the closure, so that is what is recorded.
+     *
+     * `$includeUnfinished` is what separates the two. False — the default — is
+     * always safe: it only records something the rules already consider true.
+     * True is for closing the competition, and it is irreversible, so the
+     * caller is the one that must have asked.
+     *
+     * @param  bool  $includeUnfinished  settle contestants whose time has NOT run out
+     * @param  bool  $dryRun  count what would happen and change nothing
+     * @return array{settled: int, expired: int, cut_short: int, remaining: int}
+     */
+    public function settleAll(
+        CompetitionSettings $settings,
+        bool $includeUnfinished = false,
+        bool $dryRun = false,
+    ): array {
+        $expired = 0;
+        $cutShort = 0;
+
+        CompetitionUser::query()
+            ->where('exam_status', CompetitionUser::EXAM_IN_PROGRESS)
+            ->orderBy('id')
+            ->chunkById(200, function ($rows) use ($settings, $includeUnfinished, $dryRun, &$expired, &$cutShort): void {
+                foreach ($rows as $row) {
+                    $isExpired = $row->started_at !== null
+                        && now()->greaterThanOrEqualTo($settings->effectiveEndFor($row->started_at));
+
+                    if (! $isExpired && ! $includeUnfinished) {
+                        continue;
+                    }
+
+                    $isExpired ? $expired++ : $cutShort++;
+
+                    if ($dryRun) {
+                        continue;
+                    }
+
+                    DB::transaction(function () use ($row, $settings, $isExpired): void {
+                        $locked = CompetitionUser::query()
+                            ->whereKey($row->id)
+                            ->lockForUpdate()
+                            ->firstOrFail();
+
+                        if (! $locked->isInProgress()) {
+                            return;   // settled by their own request in the meantime
+                        }
+
+                        // Expired: reconcile() is the only thing that knows
+                        // whether the paper or the clock ended it, and records
+                        // the moment accordingly. Cut short: the competition
+                        // ended under them, so the closure IS the end.
+                        $isExpired
+                            ? $this->reconcile($locked, $settings)
+                            : $this->finalize($locked, $settings, now());
+                    });
+                }
+            });
+
+        return [
+            'settled' => $expired + $cutShort,
+            'expired' => $expired,
+            'cut_short' => $cutShort,
+            'remaining' => CompetitionUser::query()
+                ->where('exam_status', CompetitionUser::EXAM_IN_PROGRESS)
+                ->count(),
+        ];
+    }
+
+    /**
      * The contestant's own result.
      *
      * competition_settings.show_result decides whether the score is included.

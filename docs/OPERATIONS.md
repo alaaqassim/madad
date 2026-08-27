@@ -129,9 +129,17 @@ Warnings are printed and do not block.
 or submitting another answer. It is not a pause, and there is no way to reopen
 into the same session of play other than setting the status back deliberately.
 
-The command states this, names how many contestants are mid-exam and will be
-cut off, and then asks. A non-interactive run refuses unless `--force` is given
-— it never silently closes.
+**Closing also SETTLES everyone left mid-exam.** Their exam is over, so they are
+scored and closed — because every result surface filters on `completed`, and a
+contestant left in progress would silently lose the answers they had already
+given. Contestants whose own time had run out are recorded as ending when it
+actually did; contestants cut short by the closure are recorded as ending at the
+closure.
+
+That settlement is **irreversible** — re-opening the competition does not undo
+it. The command states this, names how many contestants it will score and close,
+and then asks. A non-interactive run refuses unless `--force` is given — it never
+silently closes.
 
 ---
 
@@ -160,6 +168,59 @@ to this command's output. A retry generates a **new** password and replaces the
 stored hash, because the old plaintext no longer exists to be resent. That is
 safe: if the first delivery genuinely failed, the contestant never learned the
 first password.
+
+---
+
+## 3b. `madad:settle` — leave nobody mid-exam
+
+```bash
+php artisan madad:settle --dry-run     # report only, change nothing
+php artisan madad:settle               # settle those whose time has run out
+php artisan madad:settle --all         # also settle contestants still in their time
+php artisan madad:settle --force       # non-interactive
+```
+
+### The problem it solves
+
+A contestant is settled by their own next request: the last answer finalises on
+the spot, and a returning contestant whose time has run out is settled before
+the gate. **Neither fires for someone who closes the browser at question 59 and
+never comes back** — no request, no settlement.
+
+Every result surface filters on `exam_status = completed`, so that contestant
+disappears from their own result and from the Top 100 **while their answers sit
+intact in the row**. On the development fixtures that was 100 contestants
+holding 3,500 answers, nine of them scoring high enough for a place — including
+one on 55, which would have been third.
+
+The confirmed rule is that **at the end of the exam nobody is in progress**, and
+each contestant is measured against the end of their own exam.
+
+### What it does
+
+Nothing new: each contestant is finalised by exactly the code their own final
+request would have run — the score recomputed from the answer string, and
+`completed_at` set to the moment the exam actually ended (the last answer, the
+close of the last window, or the deadline). So a settled contestant enters the
+duration tie-break on the same terms as everybody else.
+
+`--dry-run` first, always. It prints how many would be settled and the highest
+scores currently missing from the results, and changes nothing:
+
+```
+to settle: 100   (time run out: 100)
+
+highest scores currently missing from the results:
++---------------------------+---------+----------+---------+
+| email                     | correct | answered | reached |
++---------------------------+---------+----------+---------+
+| contestant0174@madad.test | 55      | 56       | 59      |
+```
+
+**Settling is irreversible.** Without `--all` it is still always safe: it only
+records something the rules already consider true. `--all` also settles
+contestants whose time has *not* run out, which is only correct once the
+competition itself is over — and `madad:status --set=closed` already does it.
 
 ---
 
@@ -351,7 +412,8 @@ php artisan madad:status
 php artisan madad:preflight
 
 # when it ends
-php artisan madad:status --set=closed           # ENDS the competition; confirm
+php artisan madad:status --set=closed           # ENDS the competition AND settles everyone; confirm
+php artisan madad:settle --dry-run              # confirm nobody is left mid-exam
 php artisan madad:preflight                     # integrity of the final data
 php artisan madad:results --top=100 --export=madad-top100.csv
 php artisan madad:results --top=0   --export=madad-all-completed.csv
