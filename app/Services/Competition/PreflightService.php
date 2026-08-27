@@ -382,7 +382,6 @@ class PreflightService
     private function examDataChecks(CompetitionSettings $settings): array
     {
         $count = $settings->questionCount();
-        $seconds = $settings->secondsPerQuestion();
         $now = now()->format('Y-m-d H:i:s');
 
         $bank = DB::table('competition_questions')
@@ -399,7 +398,9 @@ class PreflightService
         $indexOutOfRange = 0;
         $answeredAhead = 0;
         $missingStartedAt = 0;
-        $aheadOfTheClock = 0;
+        $missingQuestionAnchor = 0;
+        $anchorBeforeStart = 0;
+        $anchorInTheFuture = 0;
         $notStartedWithProgress = 0;
         $completedNotAtEnd = 0;
         $aggregateMismatch = 0;
@@ -408,14 +409,15 @@ class PreflightService
             ->orderBy('id')
             ->select([
                 'id', 'exam_status', 'started_at', 'completed_at', 'question_order',
-                'current_question', 'answers',
+                'current_question', 'current_question_started_at', 'answers',
                 'correct_answers', 'answered_questions',
             ])
             ->chunk(500, function ($rows) use (
-                $count, $bank, $seconds, $now,
+                $count, $bank, $now,
                 &$withOrder, &$startedWithoutOrder, &$wrongLength, &$duplicateIds, &$foreignIds,
                 &$badAnswerLength, &$badAnswerChars, &$indexOutOfRange, &$answeredAhead,
-                &$missingStartedAt, &$aheadOfTheClock, &$notStartedWithProgress,
+                &$missingStartedAt, &$missingQuestionAnchor, &$anchorBeforeStart,
+                &$anchorInTheFuture, &$notStartedWithProgress,
                 &$completedNotAtEnd, &$aggregateMismatch,
             ): void {
                 foreach ($rows as $row) {
@@ -470,17 +472,29 @@ class PreflightService
                         $missingStartedAt++;
                     }
 
-                    // Invariant 4 of the engine: the index reaches time_index by
-                    // reconciliation and time_index + 1 by answering the live
-                    // slot, so it can never be further ahead than that. A row
-                    // that is means something wrote a position the clock never
-                    // reached.
-                    if ($row->exam_status === CompetitionUser::EXAM_IN_PROGRESS && $row->started_at !== null) {
-                        $elapsed = max(0, strtotime((string) $now) - strtotime((string) $row->started_at));
-                        $timeIndex = intdiv($elapsed, $seconds);
+                    /*
+                     * The live question's own anchor. Under immediate advance the
+                     * index is NOT bounded by elapsed time — a contestant who
+                     * answers fast is legitimately far ahead of the clock — so
+                     * the checks that matter are about the anchor itself:
+                     * present, not before the attempt began, and not in the
+                     * future. A missing one would leave the engine falling back
+                     * to started_at and mis-timing that contestant; one in the
+                     * future would hand them a window they never earned.
+                     */
+                    if ($row->exam_status === CompetitionUser::EXAM_IN_PROGRESS) {
+                        if ($row->current_question_started_at === null) {
+                            $missingQuestionAnchor++;
+                        } elseif ($row->started_at !== null) {
+                            $anchor = strtotime((string) $row->current_question_started_at);
 
-                        if ($index > $timeIndex + 1) {
-                            $aheadOfTheClock++;
+                            if ($anchor < strtotime((string) $row->started_at)) {
+                                $anchorBeforeStart++;
+                            }
+
+                            if ($anchor > strtotime((string) $now)) {
+                                $anchorInTheFuture++;
+                            }
                         }
                     }
 
@@ -569,15 +583,27 @@ class PreflightService
             ),
 
             PreflightCheck::forCount(
-                'Exam data', 'timeline anchor', $missingStartedAt,
-                'started contestants have no started_at - their timeline cannot be derived',
+                'Exam data', 'attempt anchor', $missingStartedAt,
+                'started contestants have no started_at - their allowance cannot be derived',
                 'every started contestant has a started_at',
             ),
 
             PreflightCheck::forCount(
-                'Exam data', 'position vs clock', $aheadOfTheClock,
-                'contestants sit further ahead than the fixed timeline allows',
-                'no contestant is ahead of the position the clock permits',
+                'Exam data', 'question anchor', $missingQuestionAnchor,
+                'in-progress contestants have no current_question_started_at - their question timer cannot be derived',
+                'every in-progress contestant has a current_question_started_at',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'anchor ordering', $anchorBeforeStart,
+                'contestants have a question anchor earlier than their own start',
+                'no question anchor precedes the attempt it belongs to',
+            ),
+
+            PreflightCheck::forCount(
+                'Exam data', 'anchor in the future', $anchorInTheFuture,
+                'contestants have a question anchor later than the server clock',
+                'no question anchor is in the future',
             ),
 
             PreflightCheck::forCount(

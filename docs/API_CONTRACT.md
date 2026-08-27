@@ -119,14 +119,13 @@ Public. Answers even when the portal is shut, so the client can explain why.
 ### `POST /api/exam/start` → **200**
 
 Start and resume are the same call. A second start never reshuffles the paper,
-never moves `started_at`, and never reopens a slot whose time has passed.
+never moves `started_at`, and never reopens a question whose window has closed.
 
 ```json
 {
   "exam_status": "in_progress",
   "started_at": "2026-09-05T09:00:04+00:00",
-  "question": { … see Question payload … },
-  "waiting": null
+  "question": { … see Question payload … }
 }
 ```
 
@@ -134,75 +133,65 @@ never moves `started_at`, and never reopens a slot whose time has passed.
 
 Identical envelope to `/exam/start`, so the client renders one shape.
 
-**Exactly one of `question` and `waiting` is ever non-null**, and both are null
-before the exam begins and once it is over.
+| `exam_status` | `question` | Means |
+|---|---|---|
+| `not_started` | `null` | Has not pressed Begin |
+| `in_progress` | payload | A question is live — answer it |
+| `completed` | `null` | The paper, the allowance or the window ended it |
 
-| `exam_status` | `question` | `waiting` | Means |
-|---|---|---|---|
-| `not_started` | `null` | `null` | Has not pressed Begin |
-| `in_progress` | payload | `null` | A question is live — answer it |
-| `in_progress` | `null` | payload | Answered early; the next fixed slot has not opened |
-| `completed` | `null` | `null` | The paper, the allowance or the window ended it |
-
-Branch on `exam_status` **first** and `waiting` **second**. A client that reads
-`question: null` as "finished" will drop a waiting contestant onto the results
-screen with most of their paper unanswered.
-
-### Waiting payload
-
-```json
-{
-  "sequence": 2,
-  "total_questions": 75,
-  "opens_at": "2026-09-05T09:00:44+00:00",
-  "server_time": "2026-09-05T09:00:09+00:00",
-  "seconds_remaining": 35.0
-}
-```
-
-No question, no options, no ids. `sequence` is the position **about to** open,
-so progress stays honest while the contestant waits. `seconds_remaining` is
-never greater than `seconds_per_question`, and the wait never exceeds one slot.
-Render it, count it down, and when it reaches zero call `GET /api/exam/current`
-— exactly as you already do when the question timer reaches zero.
+**An `in_progress` contestant always has a live question.** There is no
+in-between state: the server reconciles the position on every request, so
+whatever it hands back is live on its clock right now. Branch on `exam_status`,
+not on the presence of a question.
 
 > **Reading the current question is a state change.** The server reconciles the
 > contestant's position against elapsed time on every request. A refresh
 > re-serves the same question with the same deadline, and time spent away is
-> spent: positions whose slots closed while the contestant was disconnected,
+> spent: questions whose windows closed while the contestant was disconnected,
 > logged out, or on another device are permanently skipped and cannot be
 > reclaimed. Reloading the page never buys time.
 
 ### The timeline, in full
 
-`competition_users.started_at` is the **only** timing anchor stored. Nothing
-records when a question was opened, when a contestant arrived at a position,
-when they disconnected, or when they logged out. Every timestamp below is
-derived on the request that reports it:
+Two anchors are stored, both on the contestant's row, and no deadline ever is:
+
+```
+started_at                    when the ATTEMPT began
+current_question_started_at   when the LIVE question became live
+```
+
+Everything the API reports is derived from that pair on the request that
+reports it:
 
 ```
 s  = seconds_per_question (40)        n  = total_questions (75)
 t0 = started_at                       D  = exam_duration_minutes × 60 (3600)
+q0 = current_question_started_at
 
-slot i         [ t0 + i·s ,  t0 + (i+1)·s )
-time_index     floor( (now − t0) / s )
-effective_end  min( t0 + D , ends_at )
-expires_at     min( slot_end , effective_end )
+effective_end     min( t0 + D , ends_at )
+expires_at        min( q0 + s , effective_end )
+windows_elapsed   floor( (now − q0) / s )
 ```
+
+**Answering advances immediately.** The moment an answer lands, the next
+question is live and `q0` becomes that moment — so a contestant who answers in
+five seconds gets the next question in five seconds, with a fresh window of up
+to `s`. There is no grid of fixed positions and nothing to wait for.
+
+**Time still never pauses.** A disconnect does not stop the question timer or
+the attempt timer. On the next request the server consumes one *whole* window
+per question missed — the anchor moves forward by exactly `s` each time, never
+to `now` — so the seconds spent away are gone. From `q0 = 08:00:05`, a
+contestant returning at `08:02:00` has lost two questions and rejoins 35
+seconds into the third.
 
 The exam is over when **any** of three things is true: the paper runs out
 (`current_question` reaches `n`), the personal allowance runs out, or the
-availability window closes. With 75 × 40 = 3000 seconds of slots inside a
-3600-second allowance, the paper is normally what ends it; the allowance and the
-window are ceilings that bind only a long paper or a late start.
+availability window closes. Answering fast buys questions, never minutes:
+`effective_end` runs from `started_at` and nothing moves it.
 
-Two consequences the client must render correctly:
-
-* **Answering early does not shift anything.** Answer position 0 five seconds
-  in and position 1 still owns `t0+40 → t0+80`. You get a `waiting` payload for
-  those 35 seconds, not a head start.
 * **A late start gets less.** A contestant beginning at 10:15 against an 11:00
-  window has their last slot trimmed to 11:00 and is completed at 11:00.
+  window has their last window trimmed to 11:00 and is completed at 11:00.
 
 ### Question payload
 
@@ -226,7 +215,7 @@ Exactly these keys, in this order. Nothing else is ever included.
 |---|---|
 | `question_id` | Send this back with the answer. |
 | `sequence` | Position on **this contestant's** paper, 1-based. It is `current_question + 1`; the paper order itself is never sent. |
-| `opened_at` / `expires_at` | ISO 8601, server clock. **Derived** from `started_at + i·s` on every request — nothing per-question is persisted, so there is no stored deadline that could drift or be extended. |
+| `opened_at` / `expires_at` | ISO 8601, server clock. `opened_at` is the stored `current_question_started_at`; `expires_at` is **derived** as `min(opened_at + s, effective_end)` on every request. No deadline is ever persisted, so none can drift or be extended. |
 | `server_time` | Use it to correct for client clock skew — never trust the device clock. |
 | `seconds_remaining` | Float, derived from `expires_at - server_time`, and never greater than `seconds_per_question`. Display only. |
 
@@ -260,18 +249,17 @@ body are ignored — the server computes them.
   "accepted": true,
   "sequence": 1,
   "exam_status": "in_progress",
-  "next_question": { … Question payload … },
-  "waiting": null
+  "next_question": { … Question payload … }
 }
 ```
 
-`next_question` and `waiting` follow exactly the table under `/exam/current`:
-the tail of an answer is the same state the client would have got by asking, so
-a submission needs no follow-up round trip. Answering **early** — which is the
-common case — returns `next_question: null` with a `waiting` payload.
+`next_question` is the state the client would have got by asking, so a
+submission needs **no follow-up round trip** — render it directly. It carries
+its own `seconds_remaining`, which is a full window unless the attempt is about
+to end; re-anchor the countdown to it rather than continuing the previous count.
 
-`next_question` and `waiting` are both `null` when that was the last question;
-`exam_status` is then `completed`.
+`next_question` is `null` only when that was the last question; `exam_status` is
+then `completed`.
 
 **The response never says whether the answer was right.** Returning correctness
 per answer would turn the exam into an oracle for the answer key.
@@ -326,7 +314,7 @@ Validation errors additionally keep Laravel's per-field `errors` object:
 | `paper_not_ready` | 409 | Question bank smaller than `question_count` | Operator problem — tell them to contact support |
 | `exam_completed` | 409 | The exam has already finished | Navigate to the result screen |
 | `no_current_question` | 409 | No question awaiting an answer | Re-fetch `/exam/current` |
-| `question_not_available` | 422 | Not on this paper, already answered, already timed out, not the current question, **or the next fixed slot has not opened yet** | Re-fetch `/exam/current` |
+| `question_not_available` | 422 | Not on this paper, already answered, already timed out, or not the current question | Re-fetch `/exam/current` |
 | `question_expired` | 422 | The answer arrived after `expires_at` | Show "time is up", then re-fetch `/exam/current` |
 | `server_error` | 500 | Unexpected failure | Generic apology; retry |
 
@@ -349,7 +337,7 @@ id the client did not already have, or an answer-key clue. This holds even when
 2. **There is no grace period.** Exactly `seconds_per_question` (40). An answer
    one millisecond late is `question_expired` and the question is lost.
 3. **A timeout is not a failure of the exam.** After `question_expired`, call
-   `GET /api/exam/current`; the next slot arrives with its own window.
+   `GET /api/exam/current`; the next question arrives with its own window.
 4. **`closed` is terminal**, and so is a window that has passed. Both stop new
    starts *and* in-progress contestants from resuming, fetching another
    question, or answering. Neither is a pause.
@@ -357,7 +345,8 @@ id the client did not already have, or an answer-key clue. This holds even when
    the same deadline, because the deadline is arithmetic rather than a record.
 6. **Never cache a question payload across a reload** — always re-fetch
    `/exam/current`, which is the authority on what is live.
-7. **`in_progress` with no question is not the end.** Check `waiting` before
-   showing a completion screen.
+7. **Answering advances immediately.** Render `next_question` from the answer
+   response — do not insert a waiting screen, and do not carry the previous
+   countdown over.
 8. **Time never pauses.** A disconnect, a logout, a closed browser and a second
-   device all change nothing: elapsed slots are spent and are not given back.
+   device all change nothing: elapsed windows are spent and are not given back.

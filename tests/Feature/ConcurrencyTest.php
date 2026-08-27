@@ -251,7 +251,6 @@ class ConcurrencyTest extends TestCase
         $service->startOrResume($participation->user, $competition);
 
         for ($position = 0; $position < 3; $position++) {
-            $this->enterSlot($participation, $competition, $position);
             $service->submitAnswer($participation->refresh(), $competition, null, 'A');
         }
 
@@ -284,7 +283,6 @@ class ConcurrencyTest extends TestCase
         $stale = $participation->fresh();
 
         for ($position = 0; $position < 3; $position++) {
-            $this->enterSlot($participation, $competition, $position);
             $service->submitAnswer($participation->refresh(), $competition, null, 'A');
         }
 
@@ -312,11 +310,9 @@ class ConcurrencyTest extends TestCase
         $first->refresh();
         $second->refresh();
 
-        // Interleave their answers, as two simultaneous contestants would. They
-        // began within the same instant, so one enterSlot serves both.
+        // Interleave their answers, as two simultaneous contestants would. Each
+        // answer opens that contestant's next question at once, independently.
         for ($position = 0; $position < 4; $position++) {
-            $this->enterSlot($first, $competition, $position);
-
             $service->submitAnswer($first->refresh(), $competition, null, $this->correctOptionAt($first->refresh(), $position));
             $service->submitAnswer($second->refresh(), $competition, null, $this->wrongOptionAt($second->refresh(), $position));
         }

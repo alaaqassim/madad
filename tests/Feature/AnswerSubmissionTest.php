@@ -17,11 +17,11 @@ use Tests\TestCase;
  * it may send is only ever checked against the one the server already resolved
  * from question_order[current_question] — never used to choose.
  *
- * Note `enterSlot()` before each successive answer. Under the fixed timeline
- * position N is only answerable inside [started_at + N·s, started_at + (N+1)·s),
- * so a contestant who answers instantly cannot fire the next answer instantly
- * too — the clock has to reach the next slot first. That is the rule under
- * test as much as it is scaffolding.
+ * Note that successive answers need no clock movement between them. Under
+ * immediate advance the next question is live the instant the previous answer
+ * lands, so answering four in a row inside one second is legitimate — and the
+ * tests below do exactly that. Where a window is meant to CLOSE unanswered, the
+ * clock is moved explicitly.
  */
 class AnswerSubmissionTest extends TestCase
 {
@@ -67,7 +67,6 @@ class AnswerSubmissionTest extends TestCase
         // at, never the one the option happens to suit.
         $service->submitAnswer($contestant, $competition, null, $this->correctOptionAt($contestant, 0));
 
-        $this->enterSlot($contestant, $competition, 1);
         $service->submitAnswer($contestant->refresh(), $competition, null, $this->correctOptionAt($contestant, 1));
 
         $this->assertSame(2, $contestant->refresh()->correct_answers);
@@ -194,7 +193,6 @@ class AnswerSubmissionTest extends TestCase
         [$competition, $contestant, $service] = $this->startedContestant(5);
 
         for ($position = 0; $position < 5; $position++) {
-            $this->enterSlot($contestant, $competition, $position);
             $contestant->refresh();
 
             $option = $position % 2 === 0
@@ -219,14 +217,12 @@ class AnswerSubmissionTest extends TestCase
         [$competition, $contestant, $service] = $this->startedContestant(5);
 
         for ($position = 0; $position < 4; $position++) {
-            $this->enterSlot($contestant, $competition, $position);
             $service->submitAnswer($contestant->refresh(), $competition, null, $this->correctOptionAt($contestant->refresh(), $position));
         }
 
         // Corrupt the running counters just before the finalising answer.
         $contestant->refresh()->forceFill(['correct_answers' => 99, 'answered_questions' => 99])->save();
 
-        $this->enterSlot($contestant, $competition, 4);
         $service->submitAnswer($contestant->refresh(), $competition, null, $this->correctOptionAt($contestant->refresh(), 4));
 
         $contestant->refresh();
@@ -240,7 +236,6 @@ class AnswerSubmissionTest extends TestCase
         [$competition, $contestant, $service] = $this->startedContestant(5);
 
         for ($position = 0; $position < 5; $position++) {
-            $this->enterSlot($contestant, $competition, $position);
             $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
         }
 
@@ -258,12 +253,11 @@ class AnswerSubmissionTest extends TestCase
 
         $service->submitAnswer($contestant, $competition, null, $this->correctOptionAt($contestant, 0));
 
-        // Slots 1 and 2 elapse untouched, then the contestant comes back inside
-        // slot 3 and finishes the paper.
-        $this->enterSlot($contestant, $competition, 3);
-        $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
+        // Two whole windows elapse untouched — positions 1 and 2 are spent —
+        // then the contestant comes back and finishes the paper.
+        $this->travel(80)->seconds();
 
-        $this->enterSlot($contestant, $competition, 4);
+        $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
         $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
 
         $contestant->refresh();
@@ -279,7 +273,6 @@ class AnswerSubmissionTest extends TestCase
         [$competition, $contestant, $service] = $this->startedContestant(5);
 
         for ($position = 0; $position < 5; $position++) {
-            $this->enterSlot($contestant, $competition, $position);
             $service->submitAnswer($contestant->refresh(), $competition, null, 'A');
         }
 

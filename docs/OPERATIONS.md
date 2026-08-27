@@ -46,7 +46,7 @@ It checks:
 | Competition | exists, exactly one, status, `question_count`, `seconds_per_question`, `show_result` |
 | Questions | bank ≥ `question_count`, no missing A/B/C/D, non-empty text, `correct_option` in A–D, unique question numbers |
 | Contestants | totals, account-status and email-status distributions, usable accounts, duplicate emails, orphan account links, created-without-user |
-| Exam data | duplicate sequences, duplicate assignments, answered-and-timed-out, orphan answer timestamps, unopened answers, scoring integrity, **40-second timer windows**, paper length, terminal states, not-started integrity, completed aggregates, completion timestamps |
+| Exam data | question orders, order length, duplicate questions, foreign questions, answer length and alphabet, position range, answers ahead of position, **both timing anchors** (attempt anchor, question anchor, anchor ordering, anchor not in the future), not-started integrity, terminal position, completed aggregates |
 
 **Blockers vs warnings.** FAIL is reserved for states in which the competition
 cannot correctly run. Undelivered credentials, unprovisioned participations and
@@ -103,6 +103,13 @@ effective_end = min( competition_users.started_at + 60 minutes , ends_at )
 So a contestant beginning at 10:15 against an 11:00 window gets 45 minutes, and
 the ready screen tells them so before they press Begin. No end time is stored
 anywhere — it is derived on every request from `started_at`.
+
+There is a third clock, and it is per question: `seconds_per_question` (40),
+counted from `competition_users.current_question_started_at`. Answering opens
+the next question **immediately**, so that anchor is the moment the previous
+answer landed — which is why it is stored rather than derived. A contestant who
+answers quickly works through more questions in the same hour; they do not earn
+extra minutes.
 
 ### Opening
 

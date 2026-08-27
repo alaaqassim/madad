@@ -64,7 +64,6 @@ class ExamResumeTest extends TestCase
         $this->flushSession();
 
         // Time did not pause while they were away, and slot 1 is now live.
-        $this->enterSlot($contestant, $competition, 1);
 
         $resumed = $this->actingAs($contestant->user)
             ->postJson('/api/exam/start')
@@ -86,11 +85,9 @@ class ExamResumeTest extends TestCase
 
         $this->exam()->submitAnswer($contestant, $competition, null, 'B');
 
-        $this->enterSlot($contestant, $competition, 1);
         $this->exam()->submitAnswer($contestant->refresh(), $competition, null, 'C');
 
         // A different machine, its own session, the same account.
-        $this->enterSlot($contestant, $competition, 2);
         $this->flushSession();
 
         $onOtherDevice = $this->actingAs($contestant->user)
@@ -111,7 +108,6 @@ class ExamResumeTest extends TestCase
         $this->exam()->startOrResume($contestant->user, $competition);
         $contestant->refresh();
         $this->exam()->submitAnswer($contestant, $competition, null, 'A');
-        $this->enterSlot($contestant, $competition, 1);
 
         // A session claiming a different position must not be believed.
         session(['current_question' => 40]);
@@ -144,7 +140,6 @@ class ExamResumeTest extends TestCase
         $this->exam()->startOrResume($done->user, $competition);
 
         for ($i = 0; $i < 5; $i++) {
-            $this->enterSlot($done, $competition, $i);
             $this->exam()->submitAnswer($done->refresh(), $competition, null, 'A');
         }
 
@@ -179,7 +174,6 @@ class ExamResumeTest extends TestCase
         $this->exam()->startOrResume($contestant->user, $competition);
 
         for ($i = 0; $i < 5; $i++) {
-            $this->enterSlot($contestant, $competition, $i);
             $this->exam()->submitAnswer($contestant->refresh(), $competition, null, 'A');
         }
 

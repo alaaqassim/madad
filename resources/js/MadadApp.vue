@@ -8,7 +8,6 @@ import LoginPage from './pages/LoginPage.vue';
 import CompetitionStatusPage from './pages/CompetitionStatusPage.vue';
 import ExamIntroPage from './pages/ExamIntroPage.vue';
 import ExamPage from './pages/ExamPage.vue';
-import ExamWaitingPage from './pages/ExamWaitingPage.vue';
 import ExamCompletedPage from './pages/ExamCompletedPage.vue';
 import { useCompetitionExam, SCREEN } from './composables/useCompetitionExam';
 import { copy } from './i18n/messages';
@@ -55,11 +54,7 @@ onMounted(async () => {
     <MadadShell>
         <template #header-actions>
             <MadadButton
-                v-if="
-                    exam.authenticated.value &&
-                    exam.screen.value !== SCREEN.EXAM &&
-                    exam.screen.value !== SCREEN.WAITING
-                "
+                v-if="exam.authenticated.value && exam.screen.value !== SCREEN.EXAM"
                 variant="link"
                 @click="exam.logout()"
             >
@@ -129,19 +124,7 @@ onMounted(async () => {
             @retry="exam.refreshCurrent()"
         />
 
-        <!-- 6. Between two fixed slots: answered early, next one not open yet -->
-        <ExamWaitingPage
-            v-else-if="exam.screen.value === SCREEN.WAITING && exam.waiting.value"
-            :waiting="exam.waiting.value"
-            :competition-name="exam.competition.name"
-            :timer-seconds="exam.timer.seconds.value"
-            :timer-fraction="exam.timer.fraction.value"
-            :recovering="exam.busy.recover"
-            :error-reason="exam.error.value"
-            @retry="exam.refreshCurrent()"
-        />
-
-        <!-- 7. Completed, with or without a score depending on the server -->
+        <!-- 6. Completed, with or without a score depending on the server -->
         <ExamCompletedPage
             v-else-if="exam.screen.value === SCREEN.COMPLETED"
             :result="exam.result.value"

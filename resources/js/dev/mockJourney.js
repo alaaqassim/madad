@@ -11,13 +11,13 @@ import { ApiError } from '../api/http';
 | frozen contract — same keys, same nesting, same `reason` codes — and it holds
 | the same invariants CompetitionExamService holds:
 |
-|   * The clock is the server's, and `startedAt` is the only anchor there is.
-|     Every slot boundary is arithmetic on it — nothing per-question is stored,
-|     so there is no deadline that could drift or be extended.
+|   * The clock is the server's. Two anchors are persisted and no expiry ever
+|     is: `startedAt` bounds the attempt, `questionStartedAt` is when the live
+|     question became live. Every deadline is arithmetic on the pair.
 |   * The current question is an INDEX into the persisted order, reconciled
 |     forward against elapsed time on every request. Time never pauses.
-|   * Answering early does not shift the grid: it yields a `waiting` payload
-|     until the next fixed slot opens.
+|   * Answering early ADVANCES IMMEDIATELY: the next question is served at once
+|     with its own window of up to `secondsPerQuestion`.
 |   * The answer key never leaves this file. `correct` is read here to grade
 |     and is absent from every payload.
 |
@@ -170,6 +170,12 @@ function blankState() {
         order: null,
         /** A ZERO-BASED INDEX into `order`, never a question id. */
         currentQuestion: null,
+        /**
+         * When the LIVE question became live. Persisted because under immediate
+         * advance it cannot be derived: it depends on when the previous answer
+         * landed, which is exactly the thing a refresh must not be able to move.
+         */
+        questionStartedAt: null,
         /** One character per position, over A|B|C|D|-. */
         answers: null,
     };
@@ -260,17 +266,22 @@ export function createMockJourney({
         state.answers = marks.join('');
     };
 
-    // ── the fixed timeline, derived from startedAt alone ────────────────────
+    // ── the timeline: two anchors, no stored expiry ─────────────────────────
 
     const startedMs = () => Date.parse(state.startedAt);
-    const slotMs = secondsPerQuestion * 1000;
+    const windowMs = secondsPerQuestion * 1000;
 
     /** min(personal allowance, competition window). The mock has no window. */
     const effectiveEnd = () => startedMs() + EXAM_DURATION_MINUTES * 60 * 1000;
 
-    const opensAt = (index) => startedMs() + index * slotMs;
-    const closesAt = (index) => Math.min(opensAt(index + 1), effectiveEnd());
-    const timeIndex = () => Math.floor(Math.max(0, now() - startedMs()) / slotMs);
+    /** When the live question became live. Read, never derived. */
+    const openedAt = () => Date.parse(state.questionStartedAt ?? state.startedAt);
+
+    /** Its own window, unless the attempt ends first. */
+    const closesAt = () => Math.min(openedAt() + windowMs, effectiveEnd());
+
+    /** Whole question windows that have elapsed since the live one opened. */
+    const windowsElapsed = () => Math.floor(Math.max(0, now() - openedAt()) / windowMs);
 
     /** Recomputed from the answer string, never from a running counter. */
     const finalize = () => {
@@ -283,45 +294,68 @@ export function createMockJourney({
         state.answeredQuestions = state.order.filter((_, position) => answerAt(position) !== null).length;
 
         state.examStatus = 'completed';
+        state.questionStartedAt = null;
         state.completedAt = state.completedAt ?? iso(now());
     };
 
     /**
-     * Move to the position the clock says, and end the exam if the time is up.
-     * Positions passed over keep their '-' forever: time never pauses, and a
-     * contestant who walked away does not come back to the question they left.
+     * Consume every question window that has fully elapsed, and end the exam if
+     * the time is up. The anchor moves forward by exactly one window per
+     * position consumed — NOT to `now`, which would hand back the seconds the
+     * contestant was away. Positions passed over keep their '-' forever.
      */
     const reconcile = () => {
         if (state.examStatus !== 'in_progress') {
             return;
         }
 
-        const target = Math.min(TOTAL_QUESTIONS, Math.max(state.currentQuestion, timeIndex()));
-
-        if (now() >= effectiveEnd() || target >= TOTAL_QUESTIONS) {
+        if (now() >= effectiveEnd() || state.currentQuestion >= TOTAL_QUESTIONS) {
             finalize();
             persist();
 
             return;
         }
 
-        // Waiting for a slot that opens only after the exam ends.
-        if (state.currentQuestion > timeIndex() && opensAt(state.currentQuestion) >= effectiveEnd()) {
-            finalize();
-            persist();
+        const windows = windowsElapsed();
 
+        if (windows <= 0) {
             return;
         }
 
-        if (target > state.currentQuestion) {
-            state.currentQuestion = target;
-            persist();
+        const target = Math.min(TOTAL_QUESTIONS, state.currentQuestion + windows);
+
+        for (let position = state.currentQuestion; position < target; position += 1) {
+            writeAnswer(position, null);
         }
+
+        state.questionStartedAt = iso(openedAt() + (target - state.currentQuestion) * windowMs);
+        state.currentQuestion = target;
+
+        if (target >= TOTAL_QUESTIONS) {
+            finalize();
+        }
+
+        persist();
     };
 
+    /** Record the answer and open the next question IMMEDIATELY. */
     const advance = (option) => {
         writeAnswer(state.currentQuestion, option);
         state.currentQuestion += 1;
+        state.questionStartedAt = iso(now());
+
+        if (state.currentQuestion >= TOTAL_QUESTIONS) {
+            finalize();
+        }
+
+        persist();
+    };
+
+    /** A window that closed unanswered: one window forward, never to `now`. */
+    const expireCurrent = () => {
+        writeAnswer(state.currentQuestion, null);
+        state.currentQuestion += 1;
+        state.questionStartedAt = iso(openedAt() + windowMs);
 
         if (state.currentQuestion >= TOTAL_QUESTIONS) {
             finalize();
@@ -334,7 +368,7 @@ export function createMockJourney({
 
     const payload = (index) => {
         const questionId = questionIdAt(index);
-        const expiresAt = closesAt(index);
+        const expiresAt = closesAt();
 
         return {
             question_id: questionId,
@@ -343,7 +377,7 @@ export function createMockJourney({
             sequence: index + 1,
             total_questions: TOTAL_QUESTIONS,
             // Derived here, never stored: a refresh recomputes the same values.
-            opened_at: iso(opensAt(index)),
+            opened_at: iso(openedAt()),
             expires_at: iso(expiresAt),
             server_time: iso(now()),
             seconds_remaining: Math.min(
@@ -353,32 +387,16 @@ export function createMockJourney({
         };
     };
 
-    /** The transition between a slot answered early and the next one opening. */
-    const waitingPayload = (index) => ({
-        sequence: index + 1,
-        total_questions: TOTAL_QUESTIONS,
-        opens_at: iso(opensAt(index)),
-        server_time: iso(now()),
-        seconds_remaining: Math.min(
-            secondsPerQuestion,
-            Math.max(0, (opensAt(index) - now()) / 1000),
-        ),
-    });
-
     const envelope = () => {
         reconcile();
 
         const base = { exam_status: state.examStatus, started_at: state.startedAt };
 
-        if (state.examStatus !== 'in_progress') {
-            return { ...base, question: null, waiting: null };
-        }
-
-        const index = state.currentQuestion;
-
-        return now() < opensAt(index)
-            ? { ...base, exam_status: state.examStatus, question: null, waiting: waitingPayload(index) }
-            : { ...base, exam_status: state.examStatus, question: payload(index), waiting: null };
+        // An in-progress contestant always has a live question: reconcile() has
+        // just moved them to the window that contains `now`.
+        return state.examStatus === 'in_progress'
+            ? { ...base, question: payload(state.currentQuestion) }
+            : { ...base, question: null };
     };
 
     return {
@@ -471,12 +489,14 @@ export function createMockJourney({
             if (state.examStatus === 'not_started' && state.startedAt === null) {
                 buildPaper();
                 state.examStatus = 'in_progress';
+                // Both anchors start together at index 0.
                 state.startedAt = iso(now());
+                state.questionStartedAt = state.startedAt;
                 persist();
             }
 
             // Resume is the identical call: the paper is reused and startedAt
-            // is never moved, so no slot is reopened.
+            // is never moved, so no window is reopened.
             return envelope();
         },
 
@@ -505,12 +525,6 @@ export function createMockJourney({
             }
 
             const index = state.currentQuestion;
-
-            // Answered early: the next slot has not opened, so nothing is live.
-            if (now() < opensAt(index)) {
-                throw new ApiError('question_not_available', { status: 422 });
-            }
-
             const expectedId = questionIdAt(index);
 
             // Not the live question, already answered, or not on this paper —
@@ -522,8 +536,8 @@ export function createMockJourney({
                 throw new ApiError(lost ? 'question_expired' : 'question_not_available', { status: 422 });
             }
 
-            if (now() > closesAt(index)) {
-                advance(null);
+            if (now() > closesAt()) {
+                expireCurrent();
 
                 throw new ApiError('question_expired', { status: 422 });
             }
@@ -538,7 +552,6 @@ export function createMockJourney({
                 // Whether the answer was right is deliberately NOT returned.
                 exam_status: next.exam_status,
                 next_question: next.question,
-                waiting: next.waiting,
             };
         },
 

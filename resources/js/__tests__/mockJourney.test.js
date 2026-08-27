@@ -35,20 +35,14 @@ function fakeClock(start = 1_800_000_000_000) {
 }
 
 /*
-| Under the fixed timeline every position owns a slot measured from startedAt,
-| so a contestant who answers instantly cannot answer the next one instantly
-| too — the clock has to reach the next slot. This drives the exam the way a
-| real contestant experiences it: answer, wait out the remainder of the slot,
-| answer again.
+| Under immediate advance an answer IS the transition: the next question is
+| already on screen when submitAnswer() resolves, with a window of its own. No
+| clock movement is needed between questions, which is exactly the behaviour
+| being asserted.
 */
-async function answerThroughSlot(exam, clock, option, seconds = 40) {
+async function answerQuestion(exam, option) {
     exam.select(option);
     await exam.submitAnswer();
-
-    if (exam.screen.value === SCREEN.WAITING) {
-        clock.advance(seconds);
-        await exam.refreshCurrent();
-    }
 }
 
 function build(journey) {
@@ -98,7 +92,7 @@ describe('the mock contestant journey', () => {
         // ── answer questions 1..3, each inside its own fixed slot ────────────
         for (let n = 1; n <= 3; n++) {
             expect(exam.question.value.sequence).toBe(n);
-            await answerThroughSlot(exam, clock, 'A');
+            await answerQuestion(exam, 'A');
         }
         expect(exam.question.value.sequence).toBe(4);
 
@@ -115,14 +109,7 @@ describe('the mock contestant journey', () => {
         expect(journey.__state().currentQuestion).toBe(4);
 
         // ── finish the paper ─────────────────────────────────────────────────
-        while (exam.screen.value === SCREEN.EXAM || exam.screen.value === SCREEN.WAITING) {
-            if (exam.screen.value === SCREEN.WAITING) {
-                clock.advance(40);
-                await exam.refreshCurrent();
-
-                continue;
-            }
-
+        while (exam.screen.value === SCREEN.EXAM) {
             exam.select('B');
             await exam.submitAnswer();
         }
@@ -170,7 +157,7 @@ describe('the mock contestant journey', () => {
 
         // Answer question 1, then wait out the rest of its fixed slot so that
         // question 2 is genuinely live before the "refresh".
-        await answerThroughSlot(first.exam, clock, 'C');
+        await answerQuestion(first.exam, 'C');
 
         const before = {
             sequence: first.exam.question.value.sequence,
@@ -212,14 +199,7 @@ describe('the mock contestant journey', () => {
         await exam.start();
 
         // Answer every question with 'A' — the score is computed, not staged.
-        while (exam.screen.value === SCREEN.EXAM || exam.screen.value === SCREEN.WAITING) {
-            if (exam.screen.value === SCREEN.WAITING) {
-                clock.advance(40);
-                await exam.refreshCurrent();
-
-                continue;
-            }
-
+        while (exam.screen.value === SCREEN.EXAM) {
             exam.select('A');
             await exam.submitAnswer();
         }

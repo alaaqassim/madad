@@ -135,7 +135,6 @@ class ExamStateMachineTest extends TestCase
         $contestant->refresh();
 
         foreach ([0, 1, 2, 3, 4] as $index) {
-            $this->enterSlot($contestant, $settings, $index);
             $contestant->refresh();
 
             $payload = $this->exam()->currentQuestion($contestant, $settings);
@@ -147,6 +146,9 @@ class ExamStateMachineTest extends TestCase
                 "position {$index} served the wrong question",
             );
             $this->assertSame($index + 1, $payload['sequence'], 'sequence is the 1-based display of the index');
+
+            // Advance the only way the machine advances: by answering.
+            $this->exam()->submitAnswer($contestant->refresh(), $settings, null, 'A');
         }
     }
 
@@ -159,8 +161,6 @@ class ExamStateMachineTest extends TestCase
         $this->exam()->startOrResume($contestant->user, $settings);
 
         foreach ([0, 1, 2] as $index) {
-            $this->enterSlot($contestant, $settings, $index);
-
             $this->assertSame(
                 CompetitionUser::EXAM_IN_PROGRESS,
                 $contestant->refresh()->exam_status,
@@ -186,7 +186,6 @@ class ExamStateMachineTest extends TestCase
         $this->exam()->startOrResume($contestant->user, $settings);
 
         foreach ([0, 1, 2] as $index) {
-            $this->enterSlot($contestant, $settings, $index);
             $this->exam()->submitAnswer($contestant->refresh(), $settings, null, 'A');
         }
 
@@ -236,8 +235,6 @@ class ExamStateMachineTest extends TestCase
 
         // COMPLETED: neither a question nor a wait.
         foreach ([0, 1] as $index) {
-            $this->enterSlot($contestant, $settings, $index);
-
             $this->actingAs($contestant->user)->postJson('/api/exam/answer', [
                 'selected_option' => 'A',
             ])->assertOk();

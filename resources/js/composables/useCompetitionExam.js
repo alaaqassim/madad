@@ -22,7 +22,6 @@ export const SCREEN = {
     GATE: 'gate', // not open / closed / no competition / not a contestant
     READY: 'ready', // start or resume
     EXAM: 'exam',
-    WAITING: 'waiting', // answered early; the next fixed slot has not opened
     COMPLETED: 'completed',
 };
 
@@ -74,11 +73,6 @@ export function useCompetitionExam(api = defaultApi) {
     const authenticated = ref(false);
 
     const question = ref(null);
-    /**
-     * The transition payload between one fixed slot and the next: sequence,
-     * total_questions, seconds_remaining. Set only while `screen` is WAITING.
-     */
-    const waiting = ref(null);
     const selected = ref(null);
     const result = ref(null);
     const fieldErrors = ref(null);
@@ -96,11 +90,10 @@ export function useCompetitionExam(api = defaultApi) {
         warningAt: 10,
         onExpire: () => {
             /*
-             * NOT a decision that the question expired, and NOT a decision that
-             * the next slot has opened — only a decision to stop accepting
-             * input and go ask the server what is true now. The same handler
-             * serves both the question timer and the waiting timer, because
-             * both end the same way: by asking.
+             * NOT a decision that the question expired — only a decision to
+             * stop accepting input and go ask the server what is true now.
+             * Whether the window really closed is the server's call, and its
+             * answer may well be the next question.
              */
             awaitingServer.value = true;
             void refreshCurrent();
@@ -132,43 +125,31 @@ export function useCompetitionExam(api = defaultApi) {
     function toGate(reason) {
         countdown.sync(null);
         question.value = null;
-        waiting.value = null;
         awaitingServer.value = false;
         fatalReason.value = reason;
         screen.value = SCREEN.GATE;
     }
 
+    /*
+     * One question replaces another with no screen in between. Answering early
+     * advances immediately, so this runs back-to-back within a single tick of
+     * the contestant's attention — and every field, the countdown included, is
+     * re-anchored from the payload rather than carried over.
+     */
     function showQuestion(payload) {
         question.value = payload;
-        waiting.value = null;
         selected.value = null;
         awaitingServer.value = false;
         screen.value = SCREEN.EXAM;
-        // Re-anchored from the server on every payload, so a refresh or a
-        // remount inherits the remaining time instead of restarting it.
-        countdown.sync(payload.seconds_remaining);
-    }
-
-    /*
-     * The contestant answered inside their slot and the next one has not opened
-     * yet. Every position owns a fixed window measured from started_at, so
-     * answering early buys no time — it buys a wait. The countdown here is the
-     * server's, exactly as on the question screen, and reaching zero asks
-     * rather than concludes.
-     */
-    function showWaiting(payload) {
-        waiting.value = payload;
-        question.value = null;
-        selected.value = null;
-        awaitingServer.value = false;
-        screen.value = SCREEN.WAITING;
+        // Re-anchored from the server on every payload, so a refresh, a remount
+        // or the next question inherits the server's remaining time instead of
+        // continuing the previous count.
         countdown.sync(payload.seconds_remaining);
     }
 
     async function toCompleted() {
         countdown.sync(null);
         question.value = null;
-        waiting.value = null;
         selected.value = null;
         awaitingServer.value = false;
         screen.value = SCREEN.COMPLETED;
@@ -188,7 +169,6 @@ export function useCompetitionExam(api = defaultApi) {
         if (envelope.exam_status === 'not_started') {
             countdown.sync(null);
             question.value = null;
-            waiting.value = null;
             selected.value = null;
             awaitingServer.value = false;
             screen.value = SCREEN.READY;
@@ -209,17 +189,12 @@ export function useCompetitionExam(api = defaultApi) {
         }
 
         /*
-         * In progress with no question. Either the next fixed slot has not
-         * opened — in which case the server says so — or the paper is over.
-         * Branching on exam_status first and `waiting` second is what keeps a
-         * waiting contestant off the completion screen.
+         * In progress with no question. The server never sends this — an
+         * in-progress contestant always has a live question — but an envelope
+         * that carries neither a question nor a status we recognise leaves
+         * nothing to render, and stopping on the completion screen is the only
+         * honest end. It is never reached by way of a normal answer.
          */
-        if (envelope.waiting) {
-            showWaiting(envelope.waiting);
-
-            return;
-        }
-
         await toCompleted();
     }
 
@@ -231,7 +206,6 @@ export function useCompetitionExam(api = defaultApi) {
             authenticated.value = false;
             countdown.sync(null);
             question.value = null;
-            waiting.value = null;
             screen.value = SCREEN.LOGIN;
 
             return true;
@@ -351,7 +325,6 @@ export function useCompetitionExam(api = defaultApi) {
         participation.value = null;
         result.value = null;
         question.value = null;
-        waiting.value = null;
         selected.value = null;
         countdown.sync(null);
         clearErrors();
@@ -434,10 +407,11 @@ export function useCompetitionExam(api = defaultApi) {
         try {
             const outcome = await api.answer(questionId, selected.value);
 
+            // The tail of the answer IS the next state, so an early answer
+            // puts the next question on screen with no extra round trip.
             await applyEnvelope({
                 exam_status: outcome.exam_status,
                 question: outcome.next_question ?? null,
-                waiting: outcome.waiting ?? null,
             });
         } catch (failure) {
             if (await handleTerminal(failure)) {
@@ -474,7 +448,6 @@ export function useCompetitionExam(api = defaultApi) {
         participation: readonly(participation),
         authenticated: readonly(authenticated),
         question: readonly(question),
-        waiting: readonly(waiting),
         selected: readonly(selected),
         result: readonly(result),
         error: readonly(error),

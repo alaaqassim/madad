@@ -12,16 +12,22 @@ use Tests\Support\MadadFixtures;
 use Tests\TestCase;
 
 /**
- * The fixed timeline: one anchor, and everything else derived from it.
+ * The timeline: two stored anchors, no stored expiry.
  *
- *   slot i          [ started_at + i·s , started_at + (i+1)·s )
- *   time_index      floor( (now − started_at) / s )
- *   effective_end   min( started_at + personal_duration , settings.ends_at )
- *   expires_at      min( slot_end , effective_end )
+ *   started_at                    bounds the ATTEMPT
+ *   current_question_started_at   when the LIVE question became live
  *
- * Nothing here reads an arrival, a reconnect, a disconnect or a device clock,
- * because none of those is stored or consulted. Every case below is arithmetic
- * on started_at and the server clock.
+ *   effective_end    min( started_at + personal_duration , settings.ends_at )
+ *   expires_at       min( current_question_started_at + s , effective_end )
+ *   windows_elapsed  floor( (now − current_question_started_at) / s )
+ *
+ * Answering ADVANCES IMMEDIATELY: the next question is live at the instant the
+ * answer lands, with a window of its own. What does NOT move is the attempt —
+ * answering fast buys questions, never minutes — and what is never given back
+ * is time spent away, because reconciliation consumes whole windows rather than
+ * restarting the clock at `now`.
+ *
+ * Nothing here reads a device clock, a request header or a session value.
  */
 class ExamTimelineTest extends TestCase
 {
@@ -44,9 +50,9 @@ class ExamTimelineTest extends TestCase
         return [$settings, $contestant->refresh()];
     }
 
-    // ── the slot grid ───────────────────────────────────────────────────────
+    // ── the question window ─────────────────────────────────────────────────
 
-    public function test_the_first_slot_opens_at_started_at_with_a_full_window(): void
+    public function test_the_first_question_opens_at_started_at_with_a_full_window(): void
     {
         [$settings, $contestant] = $this->started(5);
 
@@ -55,39 +61,77 @@ class ExamTimelineTest extends TestCase
         $this->assertSame(1, $payload['sequence']);
         $this->assertEqualsWithDelta(40.0, $payload['seconds_remaining'], 1.0);
 
-        // opened_at is slot 0's start, which IS started_at. Both are derived.
+        // At index 0 the two anchors coincide, and both are stored.
         $this->assertSame($contestant->started_at->toIso8601String(), $payload['opened_at']);
         $this->assertSame(
             $contestant->started_at->copy()->addSeconds(40)->toIso8601String(),
             $payload['expires_at'],
         );
+        $this->assertSame(
+            $contestant->started_at->toIso8601String(),
+            $contestant->current_question_started_at->toIso8601String(),
+        );
     }
 
-    public function test_every_slot_is_exactly_forty_seconds_measured_from_started_at(): void
+    public function test_answering_after_five_seconds_serves_the_next_question_immediately(): void
     {
         [$settings, $contestant] = $this->started(5);
         $startedAt = $contestant->started_at->copy();
 
-        foreach ([0, 1, 2, 3, 4] as $index) {
-            $this->enterSlot($contestant, $settings, $index);
+        $this->travel(5)->seconds();
+        $this->exam()->submitAnswer($contestant, $settings, $contestant->questionIdAt(0), 'A');
 
+        // No clock movement between the answer and this read: whatever is live
+        // is live NOW, five seconds into the attempt.
+        $state = $this->exam()->state($contestant->refresh(), $settings);
+
+        $this->assertNotNull($state['question'], 'the contestant was made to wait after an early answer');
+        $this->assertSame(2, $state['question']['sequence']);
+        $this->assertSame(CompetitionUser::EXAM_IN_PROGRESS, $state['exam_status']);
+
+        // The new window begins at the answer, not at a grid position.
+        $this->assertSame($startedAt->copy()->addSeconds(5)->toIso8601String(), $state['question']['opened_at']);
+        $this->assertSame($startedAt->copy()->addSeconds(45)->toIso8601String(), $state['question']['expires_at']);
+        $this->assertEqualsWithDelta(40.0, $state['question']['seconds_remaining'], 0.5);
+    }
+
+    public function test_the_next_question_is_anchored_at_the_server_timestamp_of_the_answer(): void
+    {
+        [$settings, $contestant] = $this->started(5);
+        $startedAt = $contestant->started_at->copy();
+
+        $this->travel(5)->seconds();
+        $this->exam()->submitAnswer($contestant, $settings, null, 'A');
+
+        // The anchor is DURABLE, not a value the payload invented: it is on the
+        // row, and it is the moment the answer landed.
+        $this->assertSame(
+            $startedAt->copy()->addSeconds(5)->toIso8601String(),
+            $contestant->refresh()->current_question_started_at->toIso8601String(),
+        );
+    }
+
+    public function test_a_question_never_gets_more_than_seconds_per_question(): void
+    {
+        [$settings, $contestant] = $this->started(5);
+
+        foreach ([0, 1, 2, 3] as $index) {
             $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
 
-            $this->assertSame($index + 1, $payload['sequence'], "slot {$index} was not live");
-            $this->assertSame(
-                $startedAt->copy()->addSeconds($index * 40)->toIso8601String(),
-                $payload['opened_at'],
-                "slot {$index} did not open at started_at + {$index}x40",
+            $this->assertSame($index + 1, $payload['sequence']);
+            $this->assertLessThanOrEqual(
+                40.0,
+                $payload['seconds_remaining'],
+                "position {$index} was given more than one window",
             );
-            $this->assertSame(
-                $startedAt->copy()->addSeconds(($index + 1) * 40)->toIso8601String(),
-                $payload['expires_at'],
-                "slot {$index} did not close at started_at + ".($index + 1).'x40',
-            );
+
+            // Answer instantly. Under immediate advance the next question is
+            // live at once — and it must still be capped at one window.
+            $this->exam()->submitAnswer($contestant->refresh(), $settings, null, 'A');
         }
     }
 
-    public function test_a_refresh_does_not_extend_the_window(): void
+    public function test_a_refresh_does_not_extend_the_current_deadline(): void
     {
         [$settings, $contestant] = $this->started(5);
 
@@ -98,133 +142,134 @@ class ExamTimelineTest extends TestCase
         $second = $this->exam()->currentQuestion($contestant->refresh(), $settings);
 
         $this->assertSame($first['question_id'], $second['question_id']);
+        $this->assertSame($first['opened_at'], $second['opened_at'], 'the anchor moved on a refresh');
         $this->assertSame($first['expires_at'], $second['expires_at'], 'the deadline moved');
         $this->assertEqualsWithDelta(28.0, $second['seconds_remaining'], 1.0);
     }
 
-    public function test_seconds_remaining_never_exceeds_seconds_per_question(): void
+    public function test_there_is_no_waiting_state_after_an_early_answer(): void
     {
         [$settings, $contestant] = $this->started(5);
 
-        foreach ([0, 1, 2, 3, 4] as $index) {
-            // Land right at the instant the slot opens: the most generous
-            // moment there is, and still exactly one window.
-            $this->enterSlot($contestant, $settings, $index, 0);
+        $this->travel(5)->seconds();
+        $this->exam()->submitAnswer($contestant, $settings, null, 'A');
 
-            $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
+        $state = $this->exam()->state($contestant->refresh(), $settings);
 
-            $this->assertLessThanOrEqual(
-                40.0,
-                $payload['seconds_remaining'],
-                "slot {$index} was given more than one window",
-            );
-        }
+        $this->assertSame(['exam_status', 'started_at', 'question'], array_keys($state));
+        $this->assertArrayNotHasKey('waiting', $state);
+        $this->assertNotNull($state['question']);
     }
 
-    // ── answering early does not shift anything ─────────────────────────────
+    public function test_the_answer_response_itself_carries_the_next_question(): void
+    {
+        [$settings, $contestant] = $this->started(5);
 
-    public function test_answering_early_does_not_move_the_next_slot(): void
+        $this->travel(5)->seconds();
+
+        $body = $this->actingAs($contestant->user)
+            ->postJson('/api/exam/answer', [
+                'question_id' => $contestant->questionIdAt(0),
+                'selected_option' => 'A',
+            ])
+            ->assertOk()
+            ->json();
+
+        // No follow-up round trip: the tail of the answer IS the next state.
+        $this->assertTrue($body['accepted']);
+        $this->assertArrayNotHasKey('waiting', $body);
+        $this->assertNotNull($body['next_question']);
+        $this->assertSame(2, $body['next_question']['sequence']);
+        $this->assertEqualsWithDelta(40.0, $body['next_question']['seconds_remaining'], 0.5);
+    }
+
+    // ── a window that closes unanswered ─────────────────────────────────────
+
+    public function test_an_unanswered_window_is_spent_and_the_next_one_opens(): void
     {
         [$settings, $contestant] = $this->started(5);
         $startedAt = $contestant->started_at->copy();
 
-        // Five seconds in. Slot 1 still owns started_at+40 → started_at+80.
-        $this->travel(5)->seconds();
-        $this->exam()->submitAnswer($contestant, $settings, $contestant->questionIdAt(0), 'A');
-
-        $this->travel(40)->seconds();   // now started_at + 45, inside slot 1
+        $this->travel(41)->seconds();
 
         $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
 
         $this->assertSame(2, $payload['sequence']);
-        $this->assertSame(
-            $startedAt->copy()->addSeconds(40)->toIso8601String(),
-            $payload['opened_at'],
-            'answering early created a new window at the answer time',
-        );
-        $this->assertSame(
-            $startedAt->copy()->addSeconds(80)->toIso8601String(),
-            $payload['expires_at'],
-            'answering early moved the next deadline',
-        );
-        $this->assertEqualsWithDelta(35.0, $payload['seconds_remaining'], 1.0);
+        $this->assertSame(CompetitionUser::NO_ANSWER, substr((string) $contestant->refresh()->answers, 0, 1));
+        $this->assertSame(0, $contestant->refresh()->answered_questions);
+
+        // The next window opened when the previous one CLOSED — 40 seconds in —
+        // not when the contestant happened to ask, 41 seconds in.
+        $this->assertSame($startedAt->copy()->addSeconds(40)->toIso8601String(), $payload['opened_at']);
+        $this->assertSame($startedAt->copy()->addSeconds(80)->toIso8601String(), $payload['expires_at']);
+        $this->assertEqualsWithDelta(39.0, $payload['seconds_remaining'], 0.5);
     }
 
-    public function test_answering_early_yields_a_waiting_state_until_the_next_slot_opens(): void
+    public function test_a_timeout_noticed_late_does_not_extend_the_question_that_follows(): void
     {
         [$settings, $contestant] = $this->started(5);
         $startedAt = $contestant->started_at->copy();
 
-        $this->travel(5)->seconds();
-        $this->exam()->submitAnswer($contestant, $settings, null, 'A');
+        // Fifteen seconds past the deadline before anyone asks.
+        $this->travel(55)->seconds();
 
-        $state = $this->exam()->state($contestant->refresh(), $settings);
-
-        $this->assertNull($state['question'], 'a question was served outside its own slot');
-        $this->assertNotNull($state['waiting'], 'there was no waiting state');
-        $this->assertSame(CompetitionUser::EXAM_IN_PROGRESS, $state['exam_status']);
-
-        $this->assertSame(2, $state['waiting']['sequence']);
-        $this->assertSame($startedAt->copy()->addSeconds(40)->toIso8601String(), $state['waiting']['opens_at']);
-        // 35 of the 40 seconds of slot 0 are left over, and that is the wait.
-        $this->assertEqualsWithDelta(35.0, $state['waiting']['seconds_remaining'], 1.0);
-        $this->assertLessThanOrEqual(40.0, $state['waiting']['seconds_remaining']);
-    }
-
-    public function test_a_contestant_waiting_for_the_next_slot_cannot_answer_yet(): void
-    {
-        [$settings, $contestant] = $this->started(5);
-
-        $this->travel(5)->seconds();
-        $this->exam()->submitAnswer($contestant, $settings, null, 'A');
-
-        $this->expectExceptionMessage('That question is not available.');
-
-        $this->exam()->submitAnswer($contestant->refresh(), $settings, null, 'B');
-    }
-
-    public function test_the_wait_ends_exactly_when_the_slot_opens(): void
-    {
-        [$settings, $contestant] = $this->started(5);
-
-        $this->travel(5)->seconds();
-        $this->exam()->submitAnswer($contestant, $settings, null, 'A');
-
-        $this->enterSlot($contestant, $settings, 1, 0);
-
-        $state = $this->exam()->state($contestant->refresh(), $settings);
-
-        $this->assertNull($state['waiting'], 'the wait outlived its own slot boundary');
-        $this->assertNotNull($state['question']);
-        $this->assertSame(2, $state['question']['sequence']);
-    }
-
-    public function test_the_position_never_moves_backwards(): void
-    {
-        [$settings, $contestant] = $this->started(75);
-
-        // Answer three questions, each inside its own slot.
-        foreach ([0, 1, 2] as $index) {
-            $this->enterSlot($contestant, $settings, $index);
-            $this->exam()->submitAnswer($contestant->refresh(), $settings, null, 'A');
-        }
-
-        $this->assertSame(3, $contestant->refresh()->current_question);
-
-        // Still inside slot 2 on the wall clock, but the contestant is at 3.
         $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
 
-        $this->assertNull($payload, 'the contestant is ahead of the clock and should be waiting');
-        $this->assertSame(3, $contestant->refresh()->current_question, 'the timeline dragged them backwards');
+        $this->assertSame(2, $payload['sequence']);
+        $this->assertSame($startedAt->copy()->addSeconds(80)->toIso8601String(), $payload['expires_at']);
+        $this->assertEqualsWithDelta(
+            25.0,
+            $payload['seconds_remaining'],
+            0.5,
+            'the overshoot was handed back as extra time',
+        );
     }
 
     // ── time never pauses ───────────────────────────────────────────────────
 
     /**
-     * The reconnect the business asked about, to the second.
+     * The reconnect from the specification, to the second.
      *
-     *   start 08:00:00, return 08:15:00 → elapsed 900s, 900/40 = 22.5 → index 22
+     *   started_at = 08:00:00        answer Q1 at 08:00:05  →  Q2 opens 08:00:05
+     *   disconnect 08:00:10          return    08:02:00
+     *
+     *   115 seconds since the anchor / 40 = 2 whole windows consumed.
      */
+    public function test_the_specified_disconnect_consumes_whole_windows_from_the_anchor(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-09-05 08:00:00'));
+
+        [$settings, $contestant] = $this->started(75);
+
+        Carbon::setTestNow(Carbon::parse('2026-09-05 08:00:05'));
+        $this->exam()->submitAnswer($contestant, $settings, null, 'A');
+
+        $this->assertSame(1, $contestant->refresh()->current_question);
+        $this->assertSame(
+            '2026-09-05T08:00:05+00:00',
+            $contestant->refresh()->current_question_started_at->toIso8601String(),
+        );
+
+        // Gone from 08:00:10 to 08:02:00. No request in between.
+        Carbon::setTestNow(Carbon::parse('2026-09-05 08:02:00'));
+
+        $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
+
+        // NOT Q2 with a fresh 40 seconds: two windows ran out while they were
+        // away, so they rejoin at position 3 (sequence 4).
+        $this->assertSame(3, $contestant->refresh()->current_question);
+        $this->assertSame(4, $payload['sequence']);
+        $this->assertSame('2026-09-05T08:01:25+00:00', $payload['opened_at'], '08:00:05 + 2x40');
+        $this->assertSame('2026-09-05T08:02:05+00:00', $payload['expires_at']);
+        $this->assertEqualsWithDelta(5.0, $payload['seconds_remaining'], 0.5);
+
+        // Positions 1 and 2 are spent, permanently, and scored nothing.
+        $this->assertSame('--', substr((string) $contestant->refresh()->answers, 1, 2));
+        $this->assertSame(1, $contestant->refresh()->answered_questions);
+
+        Carbon::setTestNow();
+    }
+
     public function test_returning_after_fifteen_minutes_resumes_at_the_real_position(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-09-05 08:00:00'));
@@ -234,59 +279,120 @@ class ExamTimelineTest extends TestCase
         $this->exam()->currentQuestion($contestant, $settings);
         $this->assertSame(0, $contestant->refresh()->current_question);
 
-        // The contestant disconnects. Fifteen minutes of real time pass.
+        // The contestant disconnects without answering. Fifteen minutes pass.
         Carbon::setTestNow(Carbon::parse('2026-09-05 08:15:00'));
 
         $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
 
-        $this->assertSame(22, $contestant->refresh()->current_question, 'the elapsed timeline was not applied');
+        $this->assertSame(22, $contestant->refresh()->current_question, '900s / 40s = 22 windows');
         $this->assertSame(23, $payload['sequence']);
-
-        // Slot 22 runs 08:14:40 → 08:15:20, so twenty seconds of it survive.
         $this->assertSame('2026-09-05T08:14:40+00:00', $payload['opened_at']);
         $this->assertSame('2026-09-05T08:15:20+00:00', $payload['expires_at']);
         $this->assertEqualsWithDelta(20.0, $payload['seconds_remaining'], 0.5);
 
-        // The twenty-two positions the clock passed are spent, permanently.
         $this->assertSame(str_repeat(CompetitionUser::NO_ANSWER, 22), substr($contestant->answers, 0, 22));
         $this->assertSame(0, $contestant->answered_questions);
 
         Carbon::setTestNow();
     }
 
-    public function test_a_disconnect_does_not_pause_the_clock(): void
-    {
-        [$settings, $contestant] = $this->started(75);
-
-        // Answer position 0, then vanish for ten minutes.
-        $this->exam()->submitAnswer($contestant, $settings, null, 'A');
-        $this->travel(600)->seconds();
-
-        $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
-
-        $this->assertSame(15, $contestant->refresh()->current_question, '600s / 40s = 15');
-        $this->assertSame(16, $payload['sequence']);
-        $this->assertNotSame(2, $payload['sequence'], 'the contestant resumed where they left off');
-        $this->assertLessThanOrEqual(40.0, $payload['seconds_remaining']);
-        $this->assertSame(1, $contestant->answered_questions, 'the elapsed slots were counted as answered');
-    }
-
-    public function test_no_timing_is_taken_from_arrival_or_reconnect(): void
+    public function test_a_long_disconnect_skips_many_windows_at_once(): void
     {
         [$settings, $contestant] = $this->started(75);
         $startedAt = $contestant->started_at->copy();
 
-        // A contestant who reconnects at an arbitrary moment gets the slot the
-        // clock says, with the deadline the grid says — not a fresh window
-        // beginning at the moment they showed up.
-        $this->travel(410)->seconds();   // 10 slots and 10 seconds
+        // Answer position 0 immediately, then vanish for ten minutes.
+        $this->exam()->submitAnswer($contestant, $settings, null, 'A');
+        $this->travel(610)->seconds();
+
+        $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
+
+        $this->assertSame(16, $contestant->refresh()->current_question, '610s / 40s = 15 windows, from index 1');
+        $this->assertSame(17, $payload['sequence']);
+        $this->assertNotSame(2, $payload['sequence'], 'the contestant resumed where they left off');
+        $this->assertSame($startedAt->copy()->addSeconds(600)->toIso8601String(), $payload['opened_at']);
+        $this->assertEqualsWithDelta(30.0, $payload['seconds_remaining'], 0.5);
+        $this->assertSame(1, $contestant->refresh()->answered_questions, 'skipped windows were counted as answers');
+    }
+
+    public function test_a_reconnect_does_not_open_a_fresh_window(): void
+    {
+        [$settings, $contestant] = $this->started(75);
+        $startedAt = $contestant->started_at->copy();
+
+        // Ten windows and ten seconds after the anchor. The contestant shows up
+        // at an arbitrary moment; the window they land in is already running.
+        $this->travel(410)->seconds();
 
         $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
 
         $this->assertSame(11, $payload['sequence']);
         $this->assertSame($startedAt->copy()->addSeconds(400)->toIso8601String(), $payload['opened_at']);
         $this->assertSame($startedAt->copy()->addSeconds(440)->toIso8601String(), $payload['expires_at']);
-        $this->assertEqualsWithDelta(30.0, $payload['seconds_remaining'], 0.5, 'a fresh window was opened on reconnect');
+        $this->assertEqualsWithDelta(
+            30.0,
+            $payload['seconds_remaining'],
+            0.5,
+            'a fresh window was opened at the moment of reconnection',
+        );
+    }
+
+    public function test_the_position_never_moves_backwards(): void
+    {
+        [$settings, $contestant] = $this->started(75);
+
+        // Three questions answered in the first few seconds — legitimate under
+        // immediate advance, and far ahead of where a fixed grid would allow.
+        foreach ([0, 1, 2] as $index) {
+            $this->exam()->submitAnswer($contestant->refresh(), $settings, null, 'A');
+        }
+
+        $this->assertSame(3, $contestant->refresh()->current_question);
+
+        $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
+
+        $this->assertSame(4, $payload['sequence']);
+        $this->assertSame(3, $contestant->refresh()->current_question, 'the contestant was dragged backwards');
+    }
+
+    public function test_the_database_is_the_source_of_progress_not_the_request(): void
+    {
+        [$settings, $contestant] = $this->started(5);
+
+        $this->exam()->submitAnswer($contestant, $settings, null, 'A');
+
+        // A completely separate read, with a fresh model instance, sees the
+        // same anchor and the same position.
+        $reread = CompetitionUser::query()->findOrFail($contestant->id);
+
+        $this->assertSame(1, (int) $reread->current_question);
+        $this->assertSame(
+            $contestant->refresh()->current_question_started_at->toIso8601String(),
+            $reread->current_question_started_at->toIso8601String(),
+        );
+        $this->assertSame(2, $this->exam()->currentQuestion($reread, $settings)['sequence']);
+    }
+
+    public function test_losing_the_session_does_not_reset_the_question_timer(): void
+    {
+        [$settings, $contestant] = $this->started(5);
+
+        $this->actingAs($contestant->user)->postJson('/api/exam/start')->assertOk();
+        $this->travel(25)->seconds();
+
+        $anchor = $contestant->refresh()->current_question_started_at->toIso8601String();
+
+        // Session gone: a new one carries no exam state whatsoever.
+        $this->post('/api/logout');
+        session()->flush();
+
+        $payload = $this->actingAs($contestant->user)
+            ->getJson('/api/exam/current')
+            ->assertOk()
+            ->json('question');
+
+        $this->assertSame($anchor, $payload['opened_at'], 'the timer restarted with the session');
+        $this->assertEqualsWithDelta(15.0, $payload['seconds_remaining'], 1.0);
     }
 
     public function test_the_device_clock_has_no_authority(): void
@@ -325,9 +431,33 @@ class ExamTimelineTest extends TestCase
         );
     }
 
+    public function test_answering_fast_buys_questions_not_minutes(): void
+    {
+        [$settings, $contestant] = $this->started(200, ['exam_duration_minutes' => 60]);
+        $startedAt = $contestant->started_at->copy();
+
+        // Ten questions answered in ten seconds. The attempt's end has not
+        // moved by a millisecond — it runs from started_at, and nothing else.
+        for ($i = 0; $i < 10; $i++) {
+            $this->travel(1)->seconds();
+            $this->exam()->submitAnswer($contestant->refresh(), $settings, null, 'A');
+        }
+
+        $this->assertSame(10, (int) $contestant->refresh()->current_question);
+        $this->assertSame(
+            $startedAt->copy()->addSeconds(3600)->toIso8601String(),
+            $settings->effectiveEndFor($contestant->refresh()->started_at)->toIso8601String(),
+        );
+        $this->assertSame(
+            $startedAt->toIso8601String(),
+            $contestant->refresh()->started_at->toIso8601String(),
+            'the attempt anchor moved',
+        );
+    }
+
     public function test_a_paper_longer_than_the_allowance_is_cut_off_at_sixty_minutes(): void
     {
-        // 200 x 40s = 8000s of slots, but only 3600s of allowance.
+        // 200 x 40s = 8000s of windows, but only 3600s of allowance.
         [$settings, $contestant] = $this->started(200, ['exam_duration_minutes' => 60]);
 
         $this->travel(3599)->seconds();
@@ -335,8 +465,8 @@ class ExamTimelineTest extends TestCase
         $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
 
         $this->assertNotNull($payload, 'the exam ended before the allowance did');
-        $this->assertSame(90, $payload['sequence'], '3599s / 40s = slot 89');
-        // Slot 89 would run to 3600s anyway; the allowance is the binding end.
+        $this->assertSame(90, $payload['sequence'], '3599s / 40s = 89 windows consumed');
+        // The window would run to 3600s anyway; the allowance is the binding end.
         $this->assertEqualsWithDelta(1.0, $payload['seconds_remaining'], 0.5);
 
         $this->travel(2)->seconds();
@@ -362,6 +492,7 @@ class ExamTimelineTest extends TestCase
         $this->assertNotNull($contestant->completed_at);
         // The one answer they did submit survives; nothing else is invented.
         $this->assertSame(1, $contestant->answered_questions);
+        $this->assertNull($contestant->current_question_started_at, 'a finished exam kept a live-question anchor');
     }
 
     public function test_an_answer_after_the_personal_deadline_is_refused(): void
@@ -375,7 +506,7 @@ class ExamTimelineTest extends TestCase
         $this->exam()->submitAnswer($contestant->refresh(), $settings, null, 'A');
     }
 
-    public function test_the_paper_still_ends_when_its_slots_run_out_before_the_allowance(): void
+    public function test_the_paper_still_ends_when_its_questions_run_out_before_the_allowance(): void
     {
         // 75 x 40 = 3000s, comfortably inside the 3600s allowance, so the paper
         // is what ends the exam — the allowance is a ceiling, not a floor.
@@ -434,13 +565,13 @@ class ExamTimelineTest extends TestCase
         $this->exam()->startOrResume($contestant->user, $settings);
         $this->exam()->submitAnswer($contestant->refresh(), $settings, null, 'A');
 
-        // 10:59:59 — still inside, and the last slot is trimmed to the window.
+        // 10:59:59 — still inside, and the last window is trimmed to the window.
         Carbon::setTestNow(Carbon::parse('2026-09-05 10:59:59'));
 
         $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
 
         $this->assertNotNull($payload);
-        $this->assertSame('2026-09-05T11:00:00+00:00', $payload['expires_at'], 'the slot ran past the window');
+        $this->assertSame('2026-09-05T11:00:00+00:00', $payload['expires_at'], 'a question ran past the window');
         $this->assertEqualsWithDelta(1.0, $payload['seconds_remaining'], 0.5);
 
         // 11:00:00 — the window is over, and so is the exam.
@@ -505,6 +636,7 @@ class ExamTimelineTest extends TestCase
 
         $this->assertSame(CompetitionUser::EXAM_NOT_STARTED, $contestant->refresh()->exam_status);
         $this->assertNull($contestant->started_at);
+        $this->assertNull($contestant->current_question_started_at);
 
         Carbon::setTestNow();
     }
@@ -519,9 +651,34 @@ class ExamTimelineTest extends TestCase
         $this->assertNotNull($this->exam()->currentQuestion($contestant, $settings));
     }
 
+    // ── stale and duplicate submissions ─────────────────────────────────────
+
+    public function test_answering_the_previous_question_again_is_refused(): void
+    {
+        [$settings, $contestant] = $this->started(5);
+
+        $answeredId = $contestant->questionIdAt(0);
+        $this->exam()->submitAnswer($contestant, $settings, $answeredId, 'A');
+
+        $this->expectExceptionMessage('That question is not available.');
+
+        // The client is a beat behind and re-sends the question it just
+        // answered. It must not be recorded twice, and must not move anything.
+        $this->exam()->submitAnswer($contestant->refresh(), $settings, $answeredId, 'B');
+    }
+
+    public function test_answering_a_question_further_down_the_paper_is_refused(): void
+    {
+        [$settings, $contestant] = $this->started(5);
+
+        $this->expectExceptionMessage('That question is not available.');
+
+        $this->exam()->submitAnswer($contestant, $settings, $contestant->questionIdAt(3), 'A');
+    }
+
     // ── the payload ─────────────────────────────────────────────────────────
 
-    public function test_the_window_is_taken_from_the_settings_row(): void
+    public function test_the_window_length_is_taken_from_the_settings_row(): void
     {
         [$settings, $contestant] = $this->started(5, ['seconds_per_question' => 15]);
 
@@ -547,23 +704,5 @@ class ExamTimelineTest extends TestCase
 
         $this->assertArrayNotHasKey('correct_option', $payload);
         $this->assertArrayNotHasKey('is_correct', $payload);
-    }
-
-    public function test_the_waiting_payload_carries_no_question_and_no_options(): void
-    {
-        [$settings, $contestant] = $this->started(5);
-
-        $this->travel(5)->seconds();
-        $this->exam()->submitAnswer($contestant, $settings, null, 'A');
-
-        $waiting = $this->exam()->state($contestant->refresh(), $settings)['waiting'];
-
-        $this->assertSame(
-            ['sequence', 'total_questions', 'opens_at', 'server_time', 'seconds_remaining'],
-            array_keys($waiting),
-        );
-        $this->assertArrayNotHasKey('question_id', $waiting);
-        $this->assertArrayNotHasKey('options', $waiting);
-        $this->assertArrayNotHasKey('correct_option', $waiting);
     }
 }

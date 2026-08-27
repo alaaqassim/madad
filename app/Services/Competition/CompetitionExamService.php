@@ -11,39 +11,49 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
- * The exam engine — Array + Index over a fixed timeline.
+ * The exam engine — Array + Index with immediate advance.
  *
  *   not_started ──Begin──▶ in_progress ──last answer / time elapsed──▶ completed
  *
  * A contestant's paper is one randomised array of competition_questions ids on
  * their participation row, and their position is a zero-based index into it.
- * There is no assignment table, and no per-question timestamp of any kind.
+ * There is no assignment table and no row per answer: the whole exam is one
+ * contestant row.
  *
  * ─── THE ONE TIMING MODEL ───────────────────────────────────────────────────
- * `started_at` is the only clock reference that exists. Everything else is
- * arithmetic performed on the request that reports it:
+ * Two anchors, both on that row, answering two different questions:
  *
- *     slot i          [ started_at + i·s , started_at + (i+1)·s )
- *     time_index      floor( (now − started_at) / s )
- *     effective_end   min( started_at + personal_duration , settings.ends_at )
- *     expires_at      min( slot_end , effective_end )
+ *     started_at                    when the ATTEMPT began — bounds the whole
+ *     current_question_started_at   when the LIVE question became live
  *
- * Nothing is stored about when a contestant arrived at a position, when they
- * disconnected, when they logged out, or when a question was opened. There is
- * no persisted expires_at to drift, and no arrival to reset.
+ * and everything else is arithmetic performed on the request that reports it:
+ *
+ *     effective_end     min( started_at + personal_duration , settings.ends_at )
+ *     expires_at        min( current_question_started_at + s , effective_end )
+ *     windows_elapsed   floor( (now − current_question_started_at) / s )
+ *
+ * ANSWERING EARLY ADVANCES IMMEDIATELY. Answer five seconds in and the next
+ * question is served at once with its own window of up to s — there is no wait
+ * for a grid position, because there is no grid. That is precisely why the
+ * second anchor has to be persisted: where the current window sits depends on
+ * when each previous answer landed, and nothing else records that.
+ *
+ * TIME STILL NEVER PAUSES. A disconnect does not stop the question timer and
+ * does not stop the attempt timer. On the next request reconcile() consumes one
+ * whole window per position missed, advancing the anchor by exactly s each time
+ * — never to `now`, which would hand back the disconnected seconds.
  *
  * Five invariants hold everywhere in this class:
  *
  *  1. The clock is the server's. Nothing the client sends about timing is read.
  *  2. Time never pauses. A disconnect, a logout, a closed browser or a second
- *     device changes nothing: elapsed slots are reconciled forward on the next
+ *     device changes nothing: elapsed windows are reconciled forward on the next
  *     request and the positions they covered are permanently spent.
- *  3. The index only ever moves forward. reconcile() takes a max(), so no path
- *     through this class can move a contestant backwards.
- *  4. current_question ≤ time_index + 1, always. The index reaches time_index by
- *     reconciliation and time_index + 1 by answering the live slot, and there is
- *     no third way to move it — which is why a contestant who answers early
- *     waits at most one slot for the next one to open.
+ *  3. The index only ever moves forward, and only ever by one position per
+ *     window consumed or answer given.
+ *  4. After any reconciliation, current_question_started_at <= now < that anchor
+ *     plus s, and now < effective_end. In other words: whatever the API is about
+ *     to report as live really is live, on the server's clock.
  *  5. Ownership is structural. Every participation is looked up FROM the
  *     authenticated user, never from a request parameter.
  *
@@ -75,14 +85,23 @@ class CompetitionExamService
      *
      * Both paths are the same call on purpose: a client that cannot tell the
      * difference cannot be tricked into restarting anything. Resume never
-     * reshuffles, never moves started_at, and never grants back a slot whose
-     * time has already passed.
+     * reshuffles, never moves started_at, and never reopens the window of a
+     * question whose time has already run out.
      */
     public function startOrResume(User $user, CompetitionSettings $settings): CompetitionUser
     {
-        $this->gate->assertMayParticipate($settings);
-
+        // Settled BEFORE the gate, and that ordering is the whole point: once
+        // the window has passed the gate refuses every call, so a contestant it
+        // cut off would never again reach the code that ends their exam.
         $participation = $this->participationFor($user);
+
+        if ($participation !== null) {
+            $this->settle($participation, $settings);
+        }
+
+        // The refusal order is unchanged: a closed portal answers `closed` to a
+        // stranger, not `not a contestant`, exactly as before.
+        $this->gate->assertMayParticipate($settings);
 
         if ($participation === null) {
             throw ExamException::notAContestant();
@@ -110,10 +129,15 @@ class CompetitionExamService
             // does not mean "fresh": a contestant who has pressed Begin and not
             // yet answered sits at index 0 with the clock already running.
             if ($locked->isNotStarted()) {
+                $now = now();
+
+                // Both anchors start together: at index 0 the attempt and the
+                // first question begin at the same instant.
                 $locked->forceFill([
                     'exam_status' => CompetitionUser::EXAM_IN_PROGRESS,
-                    'started_at' => now(),
+                    'started_at' => $now,
                     'current_question' => 0,
+                    'current_question_started_at' => $now,
                 ]);
             }
 
@@ -134,17 +158,19 @@ class CompetitionExamService
      * Reading is still a state change, because reconciling elapsed time is: a
      * contestant who walks away does not come back to the question they left.
      *
-     * Exactly one of `question` and `waiting` is ever non-null, and both are
-     * null once the exam is over or before it has begun.
+     * An in-progress contestant ALWAYS has a live question here — reconcile()
+     * has just guaranteed it. `question` is null only before Begin and after
+     * the exam is over.
      *
-     * @return array{exam_status: string, started_at: string|null, question: array<string, mixed>|null, waiting: array<string, mixed>|null}
+     * @return array{exam_status: string, started_at: string|null, question: array<string, mixed>|null}
      */
     public function state(CompetitionUser $participation, CompetitionSettings $settings): array
     {
+        $this->settle($participation, $settings);
         $this->gate->assertMayParticipate($settings);
 
         if (! $participation->isInProgress()) {
-            return $this->envelope($participation, null, null);
+            return $this->envelope($participation, null);
         }
 
         return DB::transaction(function () use ($participation, $settings) {
@@ -157,17 +183,13 @@ class CompetitionExamService
             $participation->setRawAttributes($locked->getAttributes(), true);
 
             if ($locked->isCompleted()) {
-                return $this->envelope($locked, null, null);
+                return $this->envelope($locked, null);
             }
 
-            $index = (int) $locked->current_question;
-
-            // The contestant answered early and the next slot has not opened.
-            if (now()->lessThan($this->opensAt($locked, $settings, $index))) {
-                return $this->envelope($locked, null, $this->waitingPayload($locked, $settings, $index));
-            }
-
-            return $this->envelope($locked, $this->payloadFor($locked, $settings, $index), null);
+            return $this->envelope(
+                $locked,
+                $this->payloadFor($locked, $settings, (int) $locked->current_question),
+            );
         });
     }
 
@@ -175,7 +197,7 @@ class CompetitionExamService
      * The question awaiting an answer, or null.
      *
      * A thin read over state(): null here means "no question is live", which
-     * covers not started, finished, and waiting for the next fixed slot alike.
+     * covers not started and finished alike.
      *
      * @return array<string, mixed>|null
      */
@@ -201,6 +223,7 @@ class CompetitionExamService
         ?int $questionId,
         string $option,
     ): array {
+        $this->settle($participation, $settings);
         $this->gate->assertMayParticipate($settings);
 
         $outcome = DB::transaction(function () use ($participation, $settings, $questionId, $option) {
@@ -239,18 +262,12 @@ class CompetitionExamService
                 return ['completed' => true];
             }
 
-            // Answered early, and the next slot has not opened yet. There is
-            // nothing live to answer.
-            if (now()->lessThan($this->opensAt($locked, $settings, $index))) {
-                return ['refuse' => 'question_not_available'];
-            }
-
             if ($questionId !== null && $questionId !== $expectedId) {
                 $position = array_search($questionId, $locked->order(), true);
 
-                // A position already passed with nothing recorded is a slot that
-                // closed under the contestant — worth saying so, because it is
-                // the one case where they lost something. A position they
+                // A position already passed with nothing recorded is a window
+                // that closed under the contestant — worth saying so, because it
+                // is the one case where they lost something. A position they
                 // already answered, a position ahead of them, and a question
                 // that is not on their paper at all are refused identically:
                 // telling them apart would map out other contestants' papers.
@@ -261,11 +278,12 @@ class CompetitionExamService
                 ];
             }
 
-            // reconcile() has already advanced past any closed slot, so the slot
-            // is open. Re-checked anyway: an exception here would roll back the
-            // very timeout it is reporting.
-            if (now()->greaterThan($this->deadlineFor($locked, $settings, $index))) {
-                $this->advance($locked, $settings, null, false);
+            // reconcile() has already consumed any closed window, so the live
+            // one is open. Re-checked anyway, because the clock can tick between
+            // the two reads: it consumes a whole window rather than throwing, so
+            // the timeout it reports is the timeout it records.
+            if (now()->greaterThan($this->deadlineFor($locked, $settings))) {
+                $this->expireCurrent($locked, $settings);
 
                 return ['refuse' => 'question_expired'];
             }
@@ -313,6 +331,11 @@ class CompetitionExamService
      */
     public function result(CompetitionUser $participation, CompetitionSettings $settings): array
     {
+        // The result surface deliberately does not go through the gate — a
+        // contestant may read their own outcome after the portal shuts — which
+        // makes it the one place a cut-off exam can still be settled.
+        $this->settle($participation, $settings);
+
         $payload = [
             'exam_status' => $participation->exam_status,
             'completed_at' => $this->iso($participation->completed_at),
@@ -333,16 +356,80 @@ class CompetitionExamService
     // ───────────────────────────────────────────────────────── internals ────
 
     /**
-     * Move the contestant to the position the server clock says they are at,
-     * and end the exam if their time is up.
+     * End an exam whose time is up, whether or not the portal will serve it.
      *
-     * The position is the later of where they are and where the wall clock puts
-     * them:  target = max(current_question, floor((now − started_at) / s)).
-     * Positions passed over are spent: their answer marks stay '-' forever.
+     * ─── WHY THIS IS NOT reconcile() ────────────────────────────────────────
+     * reconcile() runs INSIDE the gate, so it settles a contestant whose own
+     * sixty minutes ran out while the competition was still open. It can never
+     * settle one the WINDOW ended: at that moment the gate refuses every call,
+     * and a refused call never reaches reconcile(). Those contestants stayed
+     * `in_progress` for ever — and because every result surface filters on
+     * `exam_status = completed`, they disappeared from their own result, from
+     * the Top 100 and from the CSV export, with their submitted answers sitting
+     * intact in the database the whole time.
      *
-     * The exam ends when ANY of three things is true — the paper is used up,
-     * the personal duration has run out, or the availability window has closed.
-     * The last two are one test, because effective_end is their minimum.
+     * So this runs BEFORE the gate on every entry point. The rule it enforces
+     * is the confirmed one in its own words: `now >= effective_end` is
+     * terminal, and effective_end is min(started_at + duration, ends_at).
+     *
+     * ⚠️ Time only. A manual `status = closed` before the window has passed is
+     *    an operator's switch, not the passage of time, and settles nobody —
+     *    finalising on it would invent a business rule and would freeze the
+     *    scores of contestants an operator may yet reopen to.
+     *
+     * The unlocked pre-check matters. Without it every request would open a
+     * transaction and take a row lock only to discover there was nothing to do;
+     * with it, the cost on the hot path is the two attribute reads below.
+     */
+    private function settle(CompetitionUser $participation, CompetitionSettings $settings): void
+    {
+        if (! $participation->isInProgress() || $participation->started_at === null) {
+            return;
+        }
+
+        if (now()->lessThan($settings->effectiveEndFor($participation->started_at))) {
+            return;
+        }
+
+        DB::transaction(function () use ($participation, $settings): void {
+            $locked = CompetitionUser::query()
+                ->whereKey($participation->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            // Another tab or device may have settled it first. finalize() is
+            // idempotent, but re-running it would be work for no change.
+            if ($locked->isInProgress()) {
+                $this->finalize($locked, $settings);
+            }
+
+            $participation->setRawAttributes($locked->getAttributes(), true);
+        });
+    }
+
+    /**
+     * Consume every question window that has fully elapsed, and end the exam if
+     * the contestant's time is up.
+     *
+     * The live question owns [ q0 , q0 + s ) where q0 is
+     * current_question_started_at. If `now` is past that, the window closed
+     * without an answer: the position is marked spent, the index steps on, and
+     * the anchor moves forward by EXACTLY one window. Repeat until the window
+     * containing `now` is reached.
+     *
+     *     windows = floor( (now − q0) / s )
+     *     index  += windows          (capped at the paper length)
+     *     q0     += windows · s      ← NOT `now`
+     *
+     * Advancing the anchor by whole windows rather than to `now` is the whole
+     * disconnect rule in one line. A contestant who vanishes for 115 seconds
+     * with 40-second windows loses two positions and rejoins 35 seconds into the
+     * third, exactly as if they had been sitting there watching it run out.
+     * Setting q0 = now would silently hand back the remainder.
+     *
+     * The exam ends when ANY of three things is true — the paper is used up, the
+     * personal duration has run out, or the availability window has closed. The
+     * last two are one test, because effective_end is their minimum.
      */
     private function reconcile(CompetitionUser $participation, CompetitionSettings $settings): void
     {
@@ -358,43 +445,50 @@ class CompetitionExamService
         $startedAt = $participation->started_at ?? $now;
         $effectiveEnd = $settings->effectiveEndFor($startedAt);
 
-        $elapsed = max(0.0, $startedAt->diffInMilliseconds($now, false) / 1000);
-        $timeIndex = (int) floor($elapsed / $seconds);
-
-        $target = min($count, max($index, $timeIndex));
-
-        // Out of time, or out of paper.
-        if ($now->greaterThanOrEqualTo($effectiveEnd) || $target >= $count) {
+        // Out of time, or out of paper. Checked before the windows, because a
+        // contestant past effective_end is finished no matter where they sit.
+        if ($now->greaterThanOrEqualTo($effectiveEnd) || $index >= $count) {
             $this->finalize($participation, $settings);
 
             return;
         }
 
-        // Waiting for a slot that opens only after their exam ends. No further
-        // question can ever become live, so the wait is really the finish.
-        if ($index > $timeIndex
-            && $this->opensAt($participation, $settings, $index)->greaterThanOrEqualTo($effectiveEnd)) {
-            $this->finalize($participation, $settings);
+        $anchor = $participation->questionStartedAt() ?? $startedAt;
 
+        $elapsed = max(0.0, $anchor->diffInMilliseconds($now, false) / 1000);
+        $windows = (int) floor($elapsed / $seconds);
+
+        if ($windows <= 0) {
             return;
         }
 
-        if ($target <= $index) {
-            return;
-        }
+        $target = min($count, $index + $windows);
 
         $participation->forceFill([
             'answers' => $this->markSkipped($participation, $count, $index, $target),
             'current_question' => $target,
-        ])->save();
+            'current_question_started_at' => $anchor->copy()->addSeconds(($target - $index) * $seconds),
+        ]);
+
+        if ($target >= $count) {
+            $this->finalize($participation, $settings);
+
+            return;
+        }
+
+        $participation->save();
     }
 
     /**
-     * Record the answer (or its absence) and step to the next position.
+     * Record the answer and open the next question IMMEDIATELY.
      *
-     * Nothing about the moment of the answer is stored. The next position's
-     * window is its own fixed slot, decided by started_at alone — answering
-     * early does not shift it, and answering late does not extend it.
+     * The next question's window starts now — not at a grid position, not at the
+     * end of the one just answered. Answering in five seconds means the next
+     * question is live five seconds in with its own full window, which is the
+     * whole point of the immediate-advance rule.
+     *
+     * The overall attempt is unaffected: effective_end still runs from
+     * started_at, so answering fast buys questions, never minutes.
      *
      * Aggregates are incremented here and recomputed authoritatively in
      * finalize(), so a live score is cheap and the stored result is exact.
@@ -414,8 +508,45 @@ class CompetitionExamService
         $participation->forceFill([
             'answers' => $answers,
             'current_question' => $index + 1,
+            'current_question_started_at' => now(),
             'answered_questions' => $participation->answered_questions + ($option === null ? 0 : 1),
             'correct_answers' => $participation->correct_answers + ($isCorrect ? 1 : 0),
+        ]);
+
+        if ($index + 1 >= $count) {
+            $this->finalize($participation, $settings);
+
+            return;
+        }
+
+        $participation->save();
+    }
+
+    /**
+     * Close the live question unanswered and open the next one.
+     *
+     * The same arithmetic reconcile() uses for one window, kept separate because
+     * the two are reached differently: reconcile() consumes windows a contestant
+     * was absent for, this one resolves a submission that lost a race with its
+     * own deadline. The anchor moves by exactly s either way — a timeout noticed
+     * late must not extend the question that follows it.
+     */
+    private function expireCurrent(CompetitionUser $participation, CompetitionSettings $settings): void
+    {
+        $count = $settings->questionCount();
+        $index = (int) $participation->current_question;
+
+        $answers = $this->paddedAnswers($participation, $count);
+        $answers[$index] = CompetitionUser::NO_ANSWER;
+
+        $anchor = ($participation->questionStartedAt() ?? now())
+            ->copy()
+            ->addSeconds($settings->secondsPerQuestion());
+
+        $participation->forceFill([
+            'answers' => $answers,
+            'current_question' => $index + 1,
+            'current_question_started_at' => $anchor,
         ]);
 
         if ($index + 1 >= $count) {
@@ -470,46 +601,51 @@ class CompetitionExamService
             }
         }
 
+        // The anchor is cleared: a finished contestant has no live question, and
+        // leaving a stale one would be a timestamp that means nothing.
         $participation->forceFill([
             'correct_answers' => $correct,
             'answered_questions' => $answered,
             'exam_status' => CompetitionUser::EXAM_COMPLETED,
+            'current_question_started_at' => null,
             'completed_at' => $participation->completed_at ?? now(),
         ])->save();
     }
 
-    /** The moment slot $index opens: started_at + index · seconds_per_question. */
-    private function opensAt(CompetitionUser $participation, CompetitionSettings $settings, int $index): Carbon
-    {
-        return ($participation->started_at ?? now())
-            ->copy()
-            ->addSeconds($index * $settings->secondsPerQuestion());
-    }
-
     /**
-     * The moment slot $index closes.
+     * The moment the live question became live.
      *
-     * The slot's own end, unless the contestant's exam ends first — a late
-     * starter whose window shuts at 11:00 does not get to answer until 11:00:20
-     * merely because their slot runs that far. No time is granted beyond
-     * effective_end, ever.
+     * Read straight off the row — under immediate advance there is nothing to
+     * derive it from, because it depends on when the previous answer landed.
      */
-    private function deadlineFor(CompetitionUser $participation, CompetitionSettings $settings, int $index): Carbon
+    private function openedAt(CompetitionUser $participation): Carbon
     {
-        $startedAt = $participation->started_at ?? now();
-
-        $slotEnd = $startedAt->copy()->addSeconds(($index + 1) * $settings->secondsPerQuestion());
-        $effectiveEnd = $settings->effectiveEndFor($startedAt);
-
-        return $slotEnd->lessThan($effectiveEnd) ? $slotEnd : $effectiveEnd;
+        return ($participation->questionStartedAt() ?? now())->copy();
     }
 
     /**
-     * The contestant-safe payload for a live position.
+     * The moment the live question closes.
+     *
+     * Its own window, unless the contestant's exam ends first — a late starter
+     * whose availability window shuts at 11:00 does not get to answer until
+     * 11:00:20 merely because their question opened at 10:59:40. No time is
+     * granted beyond effective_end, ever.
+     */
+    private function deadlineFor(CompetitionUser $participation, CompetitionSettings $settings): Carbon
+    {
+        $questionEnd = $this->openedAt($participation)->addSeconds($settings->secondsPerQuestion());
+        $effectiveEnd = $settings->effectiveEndFor($participation->started_at ?? now());
+
+        return $questionEnd->lessThan($effectiveEnd) ? $questionEnd : $effectiveEnd;
+    }
+
+    /**
+     * The contestant-safe payload for the live position.
      *
      * `sequence` is 1-based for display; `question_order` itself never leaves
-     * the server, and neither does the answer key. `opened_at` and `expires_at`
-     * are DERIVED here — the API still reports them, but nothing persists them.
+     * the server, and neither does the answer key. `expires_at` is DERIVED here
+     * from the anchor — the API reports it, but no expiry is ever persisted, so
+     * there is no stored deadline that could drift or be extended.
      *
      * @return array<string, mixed>
      */
@@ -523,13 +659,13 @@ class CompetitionExamService
 
         $question = CompetitionQuestion::query()->findOrFail($questionId);
 
-        $expiresAt = $this->deadlineFor($participation, $settings, $index);
+        $expiresAt = $this->deadlineFor($participation, $settings);
         $now = now();
 
         return $question->toContestantPayload() + [
             'sequence' => $index + 1,
             'total_questions' => $settings->questionCount(),
-            'opened_at' => $this->iso($this->opensAt($participation, $settings, $index)),
+            'opened_at' => $this->iso($this->openedAt($participation)),
             'expires_at' => $this->iso($expiresAt),
             'server_time' => $this->iso($now),
             'seconds_remaining' => $this->secondsBetween($now, $expiresAt, $settings),
@@ -537,41 +673,15 @@ class CompetitionExamService
     }
 
     /**
-     * The transition between a slot answered early and the next one opening.
-     *
-     * Carries no question and no options — there is nothing live to answer yet.
-     * `sequence` is the position about to open, so the client can keep showing
-     * honest progress while it waits, and the wait can never exceed one slot
-     * (invariant 4).
-     *
-     * @return array<string, mixed>
-     */
-    private function waitingPayload(CompetitionUser $participation, CompetitionSettings $settings, int $index): array
-    {
-        $opensAt = $this->opensAt($participation, $settings, $index);
-        $now = now();
-
-        return [
-            'sequence' => $index + 1,
-            'total_questions' => $settings->questionCount(),
-            'opens_at' => $this->iso($opensAt),
-            'server_time' => $this->iso($now),
-            'seconds_remaining' => $this->secondsBetween($now, $opensAt, $settings),
-        ];
-    }
-
-    /**
      * @param  array<string, mixed>|null  $question
-     * @param  array<string, mixed>|null  $waiting
-     * @return array{exam_status: string, started_at: string|null, question: array<string, mixed>|null, waiting: array<string, mixed>|null}
+     * @return array{exam_status: string, started_at: string|null, question: array<string, mixed>|null}
      */
-    private function envelope(CompetitionUser $participation, ?array $question, ?array $waiting): array
+    private function envelope(CompetitionUser $participation, ?array $question): array
     {
         return [
             'exam_status' => $participation->exam_status,
             'started_at' => $this->iso($participation->started_at),
             'question' => $question,
-            'waiting' => $waiting,
         ];
     }
 

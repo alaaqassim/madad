@@ -95,19 +95,23 @@ class ContestantFlowHttpTest extends TestCase
         $answer->assertJsonMissingPath('is_correct');
         $answer->assertJsonMissingPath('correct_option');
 
-        // ── answering early hands back a waiting state, not the next question ──
-        $this->assertNull($answer->json('next_question'), 'the next slot was served before it opened');
-        $this->assertSame(2, $answer->json('waiting.sequence'));
+        // ── the next question comes back with the answer, immediately ────────
+        $second = $answer->json('next_question');
 
-        // ── the next question arrives when its own fixed slot opens ──────────
-        $this->enterSlot($participation, $competition, 1);
-
-        $second = $this->getJson('/api/exam/current')->assertOk()->json('question');
+        $this->assertNotNull($second, 'the contestant was made to wait after answering');
+        $answer->assertJsonMissingPath('waiting');
         $this->assertSame(2, $second['sequence']);
         $this->assertPayloadShape($second);
+        $this->assertEqualsWithDelta(40.0, $second['seconds_remaining'], 1.0, 'the new question was short-changed');
 
-        // ── timeout path: let slot 2 elapse, then answer it late ────────────
-        $this->enterSlot($participation, $competition, 2);
+        // A read confirms the same live question and the same deadline.
+        $this->assertSame(
+            $second['expires_at'],
+            $this->getJson('/api/exam/current')->assertOk()->json('question.expires_at'),
+        );
+
+        // ── timeout path: let question 2's window elapse, then answer it late ─
+        $this->travel(45)->seconds();
 
         $this->postJson('/api/exam/answer', [
             'question_id' => $second['question_id'],
@@ -121,28 +125,31 @@ class ContestantFlowHttpTest extends TestCase
         // ── continue: the exam is still live and serves question 3 ──────────
         $third = $this->getJson('/api/exam/current')->assertOk()->json('question');
         $this->assertSame(3, $third['sequence']);
-        // Slot 2 owns started_at+80 → started_at+120 and we are two seconds
-        // into it, so 38 remain. A reload does not buy a fresh forty.
-        $this->assertSame(38.0, round($third['seconds_remaining']));
+        // Question 3 opened when question 2's window CLOSED, forty seconds after
+        // the first answer — not five seconds later when we noticed. So 35 of
+        // its 40 seconds remain, and a reload does not buy a fresh forty.
+        $this->assertSame(35.0, round($third['seconds_remaining']));
         $this->assertLessThanOrEqual(40.0, $third['seconds_remaining']);
 
-        // ── answer 3, 4 and the final question 5, each inside its own slot ──
+        // ── answer 3, 4 and 5 back to back, each served by its own answer ────
         $question = $third;
 
         for ($sequence = 3; $sequence <= 5; $sequence++) {
             $this->assertSame($sequence, $question['sequence']);
 
-            $this->postJson('/api/exam/answer', [
+            $next = $this->postJson('/api/exam/answer', [
                 'question_id' => $question['question_id'],
                 'selected_option' => $this->keyFor($question['question_id']),
             ])->assertOk();
 
             if ($sequence === 5) {
+                $this->assertNull($next->json('next_question'), 'a question followed the last one');
+
                 break;
             }
 
-            $this->enterSlot($participation, $competition, $sequence);
-            $question = $this->getJson('/api/exam/current')->assertOk()->json('question');
+            $question = $next->json('next_question');
+            $this->assertNotNull($question, "answering {$sequence} did not open the next question");
         }
 
         // ── completion ──────────────────────────────────────────────────────

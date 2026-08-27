@@ -396,9 +396,10 @@ class MadadPhase1Seeder extends Seeder
     /**
      * Every contestant gets their own randomised question order and a position
      * in it. The entire exam state is three values on the participation row —
-     * question_order, current_question and the positional answers string, all
-     * anchored by started_at — and the aggregates are derived from the answers
-     * actually written, never guessed.
+     * question_order, current_question and the positional answers string —
+     * carried by two anchors: started_at bounds the attempt, and
+     * current_question_started_at is when the live question became live. The
+     * aggregates are derived from the answers actually written, never guessed.
      *
      * @param  list<array<string, mixed>>  $plan
      * @param  list<int>  $questionIds
@@ -426,6 +427,7 @@ class MadadPhase1Seeder extends Seeder
                 'answers' => $state['answers'],
                 'current_question' => $state['current_question'],
                 'started_at' => $state['started_at'],
+                'current_question_started_at' => $state['current_question_started_at'],
                 'completed_at' => $state['completed_at'],
                 'correct_answers' => $state['correct_answers'],
                 'answered_questions' => $state['answered_questions'],
@@ -459,6 +461,7 @@ class MadadPhase1Seeder extends Seeder
                 'answers' => $blank,
                 'current_question' => 0,
                 'started_at' => null,
+                'current_question_started_at' => null,
                 'completed_at' => null,
                 'correct_answers' => 0,
                 'answered_questions' => 0,
@@ -511,22 +514,31 @@ class MadadPhase1Seeder extends Seeder
                 'answers' => $answers,
                 'current_question' => self::QUESTIONS,
                 'started_at' => $this->ms($startedAt),
+                // A finished contestant has no live question.
+                'current_question_started_at' => null,
                 'completed_at' => $this->ms($finishedAt),
                 'correct_answers' => $correctAnswers,
                 'answered_questions' => $answeredQuestions,
             ];
         }
 
-        // Live: started_at is placed so that floor((now - started_at) / window)
-        // lands on exactly $position, a few seconds into that slot. There is no
-        // arrival to record - the slot boundaries follow from started_at alone.
-        $intoSlot = mt_rand(2, $window - 5);
-        $startedAt = Carbon::now()->subSeconds($position * $window + $intoSlot);
+        /*
+         * Live. Two anchors, and they are independent under immediate advance:
+         * the attempt began some way back, and the question on screen opened a
+         * few seconds ago. `$intoWindow` seconds into a window that is still
+         * running is exactly what a contestant mid-question looks like, so
+         * preflight sees a valid row and the engine serves it without
+         * reconciling anything away.
+         */
+        $intoWindow = mt_rand(2, $window - 5);
+        $startedAt = Carbon::now()->subSeconds($position * $window + $intoWindow);
+        $questionStartedAt = Carbon::now()->subSeconds($intoWindow);
 
         return [
             'answers' => $answers,
             'current_question' => $position,
             'started_at' => $this->ms($startedAt),
+            'current_question_started_at' => $this->ms($questionStartedAt),
             'completed_at' => null,
             'correct_answers' => $correctAnswers,
             'answered_questions' => $answeredQuestions,

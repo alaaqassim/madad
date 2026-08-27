@@ -92,6 +92,7 @@ class DatabaseContractTest extends TestCase
             // the current bank already needs 277 and varchar(255) would truncate.
             'question_order' => 'varchar(1024)',
             'current_question' => 'smallint',
+            'current_question_started_at' => 'datetime(3)',
             'answers' => 'varchar(255)',
             'correct_answers' => 'smallint',
             'answered_questions' => 'smallint',
@@ -257,17 +258,26 @@ class DatabaseContractTest extends TestCase
         }
     }
 
-    public function test_the_arrival_anchor_of_the_old_timing_model_is_gone(): void
+    public function test_the_two_timing_anchors_both_exist_and_are_distinct(): void
     {
-        // current_question_started_at belonged to the arrival-based window. The
-        // fixed timeline derives every deadline from started_at, so the column
-        // is not merely unused — it does not exist, and nothing can start
-        // reading it again by accident.
-        $this->assertArrayNotHasKey('current_question_started_at', $this->columns('competition_users'));
-        $this->assertFalse(Schema::hasColumn('competition_users', 'current_question_started_at'));
+        // Under immediate advance the question timer cannot be derived from the
+        // attempt timer: it depends on when the previous answer landed. So both
+        // are stored, on the SAME row, and they mean different things.
+        $columns = $this->columns('competition_users');
 
-        // started_at is the only timing anchor there is.
-        $this->assertArrayHasKey('started_at', $this->columns('competition_users'));
+        $this->assertArrayHasKey('started_at', $columns, 'the attempt anchor is missing');
+        $this->assertArrayHasKey('current_question_started_at', $columns, 'the question anchor is missing');
+
+        // Millisecond precision on both, so a fast answer is not rounded into
+        // free time.
+        $this->assertSame('datetime(3)', $columns['started_at']);
+        $this->assertSame('datetime(3)', $columns['current_question_started_at']);
+
+        // And nothing derived is stored: no expiry, no end time, no per-question
+        // opened_at beyond the single live one.
+        foreach (['expires_at', 'ends_at', 'end_time', 'opened_at', 'deadline'] as $derived) {
+            $this->assertArrayNotHasKey($derived, $columns, "a derived timestamp `{$derived}` was persisted");
+        }
     }
 
     public function test_the_per_question_assignment_table_is_gone(): void

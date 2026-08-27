@@ -133,18 +133,24 @@ trait MadadFixtures
     }
 
     /**
-     * Put a contestant at a position on a timeline of our choosing.
+     * Put a contestant at a position, with both anchors set explicitly.
      *
-     * There is only one anchor to set. By default `started_at` is placed
-     * exactly `$index` slots in the past, which is where the fixed timeline
-     * puts a contestant sitting at that position — so the fixture and the
-     * engine agree by construction rather than by coincidence.
+     * TWO anchors, because the engine has two. `started_at` bounds the attempt;
+     * `$questionStartedAt` is when the LIVE question became live, and under
+     * immediate advance it is NOT derivable from the index — a fast contestant
+     * reaches position 4 in seconds, a slow one in minutes.
+     *
+     * The defaults describe the plainest case: an attempt that began $index
+     * windows ago and a question that opened just now, which is what a
+     * contestant who has answered steadily and is looking at a fresh question
+     * looks like.
      */
     protected function placeAt(
         CompetitionUser $contestant,
         CompetitionSettings $settings,
         int $index,
         ?Carbon $startedAt = null,
+        ?Carbon $questionStartedAt = null,
     ): CompetitionUser {
         if ($contestant->order() === []) {
             $this->giveOrder($contestant, $settings);
@@ -156,30 +162,10 @@ trait MadadFixtures
             'exam_status' => CompetitionUser::EXAM_IN_PROGRESS,
             'started_at' => $startedAt,
             'current_question' => $index,
+            'current_question_started_at' => $questionStartedAt ?? now(),
         ])->save();
 
         return $contestant->refresh();
-    }
-
-    /**
-     * Move the server clock into the slot that owns $index.
-     *
-     * Under the fixed timeline a contestant cannot answer position N until
-     * started_at + N·s, so a test that answers several questions in a row has
-     * to let the clock reach each slot. `$offset` is how far into the slot to
-     * land — 2 seconds by default, comfortably inside a 40-second window.
-     */
-    protected function enterSlot(
-        CompetitionUser $contestant,
-        CompetitionSettings $settings,
-        int $index,
-        int $offset = 2,
-    ): void {
-        $startedAt = $contestant->refresh()->started_at;
-
-        $this->travelTo(
-            $startedAt->copy()->addSeconds($index * $settings->secondsPerQuestion() + $offset)
-        );
     }
 
     /** The option that would be marked correct at a position on this paper. */

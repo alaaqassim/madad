@@ -119,7 +119,6 @@ class ExamController extends Controller
 
         return response()->json($outcome + [
             'next_question' => $state['question'],
-            'waiting' => $state['waiting'],
         ]);
     }
 

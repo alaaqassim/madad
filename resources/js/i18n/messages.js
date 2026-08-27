@@ -75,9 +75,6 @@ export const copy = {
         leaveWarning: 'الوقت مستمر. الخروج الآن لن يوقف مؤقّت السؤال.',
 
         // The transition between one fixed slot and the next.
-        waitingTitle: 'سُجّلت إجابتك',
-        waitingBody: (sequence) => `سيبدأ السؤال ${sequence} في موعده المحدّد.`,
-        waitingNote: 'وقت كل سؤال ثابت منذ بداية المحاولة، والإجابة المبكرة لا تقدّمه.',
     },
 
     completed: {

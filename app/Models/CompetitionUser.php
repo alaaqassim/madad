@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
 /**
  * One contestant's participation: import record, account provisioning state,
@@ -12,8 +13,14 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * The ENTIRE exam lives on this row. `question_order` is the contestant's own
  * randomised paper — a JSON array of competition_questions ids. `current_question`
  * is a ZERO-BASED INDEX into that array, never a question id. `answers` is one
- * character per position. `started_at` is the only timing anchor there is;
- * every deadline the API reports is derived from it on the spot.
+ * character per position.
+ *
+ * TWO timing anchors, and they answer two different questions. `started_at`
+ * bounds the whole attempt (started_at + the personal allowance).
+ * `current_question_started_at` is when the LIVE question became live — which
+ * under immediate advance is the moment the previous answer landed, not a
+ * position on a fixed grid. Every deadline the API reports is derived from the
+ * pair on the spot; no expiry is ever persisted.
  *
  * `user_id` is nullable on purpose — the participation row is created before
  * the account, so a failed provisioning attempt is a visible, retryable row
@@ -76,6 +83,7 @@ class CompetitionUser extends Model
         'completed_at',
         'question_order',
         'current_question',
+        'current_question_started_at',
         'answers',
         'correct_answers',
         'answered_questions',
@@ -96,6 +104,7 @@ class CompetitionUser extends Model
             'credentials_generated_at' => 'datetime',
             'credentials_sent_at' => 'datetime',
             'started_at' => 'datetime',
+            'current_question_started_at' => 'datetime',
             'completed_at' => 'datetime',
         ];
     }
@@ -143,6 +152,19 @@ class CompetitionUser extends Model
     public function hasStarted(): bool
     {
         return ! $this->isNotStarted();
+    }
+
+    /**
+     * When the LIVE question became live.
+     *
+     * Falls back to `started_at` only for a row that predates this column — a
+     * contestant at index 0 is the case where the two coincide anyway. Nothing
+     * writes an in-progress row without it, and preflight reports any that
+     * exist rather than letting the fallback hide them.
+     */
+    public function questionStartedAt(): ?Carbon
+    {
+        return $this->current_question_started_at ?? $this->started_at;
     }
 
     /**
