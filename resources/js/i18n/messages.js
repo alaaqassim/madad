@@ -38,12 +38,15 @@ export const copy = {
         noneBody: 'لم تُفتح أي مسابقة على المنصّة في الوقت الحالي.',
         readyTitle: 'أنت على وشك البدء',
         readyBodyFresh: 'ستُعرض عليك الأسئلة واحدًا تلو الآخر، ولكل سؤال وقت محدّد يبدأ فور ظهوره.',
+        // Time away is spent: a disconnect does not pause anything, and this
+        // is the only place a contestant is told so before it costs them.
+        ruleNoPause: 'لا يتوقّف الوقت عند انقطاع الاتّصال أو الخروج، وما يمضي من وقت لا يُعوَّض.',
         readyBodyResume: 'لديك محاولة قائمة. سنعيدك إلى السؤال الذي توقّفت عنده تمامًا.',
         rules: 'ملاحظات قبل البدء',
         ruleQuestions: (total) => `عدد الأسئلة: ${total}`,
         ruleSeconds: (seconds) => `الوقت لكل سؤال: ${seconds} ثانية`,
         ruleNoBack: 'لا يمكن الرجوع إلى سؤال سابق بعد تجاوزه.',
-        ruleFixedSchedule: 'لكل سؤال وقته المحدّد منذ لحظة البدء، ولا يتغيّر بالإجابة المبكرة.',
+        ruleImmediateAdvance: 'فور تسجيل إجابتك يبدأ السؤال التالي مباشرةً بوقته الكامل.',
         ruleDuration: (minutes) => `المدّة الإجماليّة للمحاولة: ${minutes} دقيقة`,
         // Shown only when the remaining competition window is shorter than the
         // personal allowance: a late starter must know before they begin.

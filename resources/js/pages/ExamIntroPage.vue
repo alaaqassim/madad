@@ -83,8 +83,9 @@ const retryable = computed(() => ['network_error', 'server_error', 'unknown'].in
                 <li v-if="totalQuestions">{{ copy.status.ruleQuestions(totalQuestions) }}</li>
                 <li v-if="secondsPerQuestion">{{ copy.status.ruleSeconds(secondsPerQuestion) }}</li>
                 <li v-if="examDurationMinutes">{{ copy.status.ruleDuration(examDurationMinutes) }}</li>
-                <li>{{ copy.status.ruleFixedSchedule }}</li>
+                <li>{{ copy.status.ruleImmediateAdvance }}</li>
                 <li>{{ copy.status.ruleNoBack }}</li>
+                <li>{{ copy.status.ruleNoPause }}</li>
                 <li v-if="windowIsShorter" class="rules__warning">
                     {{ copy.status.ruleShortWindow(availableMinutes) }}
                 </li>
