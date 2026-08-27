@@ -1,0 +1,98 @@
+name: CI
+
+# Every push and every pull request. The suite is the only thing standing
+# between a change and competition day, so it must not depend on anybody
+# remembering to run it.
+on:
+  push:
+  pull_request:
+
+concurrency:
+  # A newer push supersedes an older run on the same branch.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (PHP 8.2, MariaDB 10.4)
+    runs-on: ubuntu-latest
+
+    services:
+      # A real MariaDB, not SQLite. DatabaseContractTest asserts column types,
+      # enums, unique indexes and a CHECK constraint, and ConcurrencyLockTest
+      # opens a second connection to prove a row lock actually blocks. Neither
+      # means anything on SQLite.
+      mariadb:
+        image: mariadb:10.4
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: madad_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, pdo_mysql, bcmath, intl
+          coverage: none
+
+      - name: Install PHP dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Prepare the environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      # Done through PDO rather than the mysql client, which is not guaranteed
+      # on the runner image. This both waits for the service and asserts the
+      # database identity, so a green run can never be a run against the wrong
+      # database.
+      - name: Wait for MariaDB and confirm the test database
+        run: php .github/scripts/check-database.php
+
+      - name: Check formatting
+        run: vendor/bin/pint --test
+
+      - name: Run the test suite
+        env:
+          DB_CONNECTION: mysql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_DATABASE: madad_test
+          DB_USERNAME: root
+          DB_PASSWORD: root
+        run: php artisan test
+
+  frontend:
+    name: Frontend (Node 24)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the test suite
+        run: npx vitest run
+
+      # A build failure otherwise surfaces only at deploy time, which is the
+      # worst moment to discover it.
+      - name: Build the production bundle
+        run: npm run build
