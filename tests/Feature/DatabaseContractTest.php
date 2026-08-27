@@ -80,7 +80,6 @@ class DatabaseContractTest extends TestCase
             'source_reference' => 'varchar(100)',
             'account_status' => "enum('pending','created','failed')",
             'credentials_generated_at' => 'datetime',
-            'email_status' => "enum('pending','sent','failed')",
             'email_attempts' => 'tinyint',
             'credentials_sent_at' => 'datetime',
             'email_last_error' => 'varchar(500)',

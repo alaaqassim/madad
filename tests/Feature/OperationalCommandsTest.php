@@ -241,7 +241,7 @@ class OperationalCommandsTest extends TestCase
             ->assertExitCode(0);
 
         $this->assertSame(3, CompetitionUser::query()->where('account_status', CompetitionUser::ACCOUNT_CREATED)->count());
-        $this->assertSame(3, CompetitionUser::query()->where('email_status', CompetitionUser::EMAIL_SENT)->count());
+        $this->assertSame(3, CompetitionUser::query()->whereEmailStatus(CompetitionUser::EMAIL_SENT)->count());
         $this->assertDatabaseCount('users', 3);
     }
 

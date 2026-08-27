@@ -96,7 +96,9 @@ class PreflightTest extends TestCase
 
         // A stated non-rule: failed delivery emails must not block launch.
         $this->makeContestant($competition, [
-            'email_status' => CompetitionUser::EMAIL_FAILED,
+            // Attempted and not delivered IS `failed`.
+            'credentials_sent_at' => null,
+            'email_attempts' => 2,
             'email_last_error' => 'SMTP 550 recipient rejected',
         ]);
         $this->makeUnprovisionedContestant($competition);

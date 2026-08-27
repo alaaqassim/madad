@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
@@ -31,7 +32,6 @@ use Illuminate\Support\Carbon;
  * @property int $id
  * @property int|null $user_id
  * @property string $account_status
- * @property string $email_status
  * @property string $exam_status
  * @property int $correct_answers
  * @property int $answered_questions
@@ -44,6 +44,21 @@ class CompetitionUser extends Model
 
     public const ACCOUNT_FAILED = 'failed';
 
+    /*
+     * email_status is DERIVED, not stored. The column was dropped because it
+     * only ever restated two columns that were written in the same breath:
+     *
+     *     credentials_sent_at IS NOT NULL  ->  sent
+     *     email_attempts > 0               ->  failed   (sent already excluded)
+     *     otherwise                        ->  pending
+     *
+     * CredentialDeliveryService writes credentials_sent_at on success and nulls
+     * it on failure, and increments email_attempts either way, so the three
+     * cases are exhaustive and cannot overlap.
+     *
+     * Read it as $participation->email_status. In SQL use EMAIL_STATUS_SQL, or
+     * whereEmailStatus() on an Eloquent query.
+     */
     public const EMAIL_PENDING = 'pending';
 
     public const EMAIL_SENT = 'sent';
@@ -55,6 +70,20 @@ class CompetitionUser extends Model
     public const EXAM_IN_PROGRESS = 'in_progress';
 
     public const EXAM_COMPLETED = 'completed';
+
+    /**
+     * The derivation, as SQL, for grouping and counting.
+     *
+     * Written once so a report and a filter can never disagree about what
+     * "failed" means.
+     */
+    public const EMAIL_STATUS_SQL = <<<'SQL'
+        CASE
+            WHEN credentials_sent_at IS NOT NULL THEN 'sent'
+            WHEN email_attempts > 0 THEN 'failed'
+            ELSE 'pending'
+        END
+        SQL;
 
     /** The `answers` placeholder for a position with no recorded option. */
     public const NO_ANSWER = '-';
@@ -74,7 +103,6 @@ class CompetitionUser extends Model
         'source_reference',
         'account_status',
         'credentials_generated_at',
-        'email_status',
         'email_attempts',
         'credentials_sent_at',
         'email_last_error',
@@ -118,6 +146,61 @@ class CompetitionUser extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Whether the credentials reached the delivery gateway.
+     *
+     * `sent` means the gateway accepted the message, NOT that the contestant
+     * received or read it. Nothing here tracks real delivery.
+     */
+    public function emailStatus(): string
+    {
+        return match (true) {
+            $this->credentials_sent_at !== null => self::EMAIL_SENT,
+            (int) $this->email_attempts > 0 => self::EMAIL_FAILED,
+            default => self::EMAIL_PENDING,
+        };
+    }
+
+    /** So `$participation->email_status` keeps working now the column is gone. */
+    public function getEmailStatusAttribute(): string
+    {
+        return $this->emailStatus();
+    }
+
+    /**
+     * Filter by the derived status.
+     *
+     * @param  Builder<CompetitionUser>  $query
+     * @return Builder<CompetitionUser>
+     */
+    public function scopeWhereEmailStatus(Builder $query, string $status): Builder
+    {
+        return match ($status) {
+            self::EMAIL_SENT => $query->whereNotNull('credentials_sent_at'),
+            self::EMAIL_FAILED => $query->whereNull('credentials_sent_at')->where('email_attempts', '>', 0),
+            default => $query->whereNull('credentials_sent_at')->where('email_attempts', 0),
+        };
+    }
+
+    /**
+     * Filter to everything EXCEPT one status.
+     *
+     * @param  Builder<CompetitionUser>  $query
+     * @return Builder<CompetitionUser>
+     */
+    public function scopeWhereEmailStatusNot(Builder $query, string $status): Builder
+    {
+        return match ($status) {
+            self::EMAIL_SENT => $query->whereNull('credentials_sent_at'),
+            self::EMAIL_FAILED => $query->where(
+                fn (Builder $q) => $q->whereNotNull('credentials_sent_at')->orWhere('email_attempts', 0)
+            ),
+            default => $query->where(
+                fn (Builder $q) => $q->whereNotNull('credentials_sent_at')->orWhere('email_attempts', '>', 0)
+            ),
+        };
     }
 
     public function hasAccount(): bool

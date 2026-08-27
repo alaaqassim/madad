@@ -88,7 +88,8 @@ trait MadadFixtures
             'contestant_name' => "متسابق {$suffix}",
             'contestant_email' => $email,
             'account_status' => CompetitionUser::ACCOUNT_CREATED,
-            'email_status' => CompetitionUser::EMAIL_SENT,
+            // Delivered: a non-null credentials_sent_at IS `sent`.
+            'credentials_sent_at' => now(),
             'email_attempts' => 1,
             'exam_status' => CompetitionUser::EXAM_NOT_STARTED,
             'correct_answers' => 0,
@@ -106,7 +107,8 @@ trait MadadFixtures
             'contestant_name' => "مرشح {$suffix}",
             'contestant_email' => "pending{$suffix}@madad.test",
             'account_status' => CompetitionUser::ACCOUNT_PENDING,
-            'email_status' => CompetitionUser::EMAIL_PENDING,
+            // Never attempted: no send time and no attempts IS `pending`.
+            'credentials_sent_at' => null,
             'email_attempts' => 0,
             'exam_status' => CompetitionUser::EXAM_NOT_STARTED,
             'correct_answers' => 0,

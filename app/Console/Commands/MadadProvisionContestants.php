@@ -39,10 +39,10 @@ class MadadProvisionContestants extends Command
         $query = CompetitionUser::query()
             // Already delivered is never re-sent: a resend would invalidate a
             // password the contestant is already holding.
-            ->where('email_status', '!=', CompetitionUser::EMAIL_SENT);
+            ->whereEmailStatusNot(CompetitionUser::EMAIL_SENT);
 
         if (! $this->option('retry-failed')) {
-            $query->where('email_status', CompetitionUser::EMAIL_PENDING);
+            $query->whereEmailStatus(CompetitionUser::EMAIL_PENDING);
         }
 
         $limit = (int) $this->option('limit');
@@ -130,7 +130,10 @@ class MadadProvisionContestants extends Command
         $base = fn () => DB::table('competition_users');
 
         $accounts = $base()->selectRaw('account_status, COUNT(*) c')->groupBy('account_status')->pluck('c', 'account_status');
-        $emails = $base()->selectRaw('email_status, COUNT(*) c')->groupBy('email_status')->pluck('c', 'email_status');
+        $emails = $base()
+            ->selectRaw(CompetitionUser::EMAIL_STATUS_SQL.' AS email_status, COUNT(*) c')
+            ->groupByRaw(CompetitionUser::EMAIL_STATUS_SQL)
+            ->pluck('c', 'email_status');
 
         return [
             'total' => $base()->count(),

@@ -72,8 +72,9 @@ class CredentialDeliveryService
             return false;
         }
 
+        // Sets the two columns email_status was derived from: a non-null
+        // credentials_sent_at IS "sent".
         $participation->forceFill([
-            'email_status' => CompetitionUser::EMAIL_SENT,
             'email_attempts' => $participation->email_attempts + 1,
             'credentials_sent_at' => now(),
             'email_last_error' => null,
@@ -84,8 +85,9 @@ class CredentialDeliveryService
 
     private function recordFailure(CompetitionUser $participation, string $error): void
     {
+        // credentials_sent_at is cleared and email_attempts incremented, which
+        // is what "failed" means once the column no longer exists.
         $participation->forceFill([
-            'email_status' => CompetitionUser::EMAIL_FAILED,
             'email_attempts' => $participation->email_attempts + 1,
             'credentials_sent_at' => null,
             'email_last_error' => mb_substr($error, 0, 500),

@@ -250,6 +250,8 @@ class MadadPhase1Seeder extends Seeder
                 'name' => 'متسابق '.str_pad((string) $i, 4, '0', STR_PAD_LEFT),
                 'email' => sprintf('contestant%04d@madad.test', $i),
                 'account_status' => $accountStatus,
+                // Not a column any more: it decides credentials_sent_at and
+                // email_attempts below, which is what the status is derived from.
                 'email_status' => $emailStatus,
                 'exam_status' => $examStatus,
             ];
@@ -346,7 +348,6 @@ class MadadPhase1Seeder extends Seeder
                 'source_reference' => sprintf('MADAD-2026-%04d', $i),
                 'account_status' => $entry['account_status'],
                 'credentials_generated_at' => $credentialsGeneratedAt,
-                'email_status' => $entry['email_status'],
                 'email_attempts' => match (true) {
                     $sent => 1,
                     $failed => mt_rand(1, 3),

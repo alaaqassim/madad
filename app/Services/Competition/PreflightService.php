@@ -292,7 +292,10 @@ class PreflightService
         $total = $base()->count();
 
         $accounts = $base()->selectRaw('account_status, COUNT(*) c')->groupBy('account_status')->pluck('c', 'account_status');
-        $emails = $base()->selectRaw('email_status, COUNT(*) c')->groupBy('email_status')->pluck('c', 'email_status');
+        $emails = $base()
+            ->selectRaw(CompetitionUser::EMAIL_STATUS_SQL.' AS email_status, COUNT(*) c')
+            ->groupByRaw(CompetitionUser::EMAIL_STATUS_SQL)
+            ->pluck('c', 'email_status');
         $exams = $base()->selectRaw('exam_status, COUNT(*) c')->groupBy('exam_status')->pluck('c', 'exam_status');
 
         $checks = [

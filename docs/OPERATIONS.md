@@ -160,6 +160,24 @@ a second account.
 The report shows: source participations, selected this run, skipped, accounts
 already created, accounts newly created, email delivered, retries attempted,
 failures, and the full before/after account- and email-status distribution.
+
+`email_status` is **derived, not stored**. There is no such column; it is read
+from the two the delivery service writes together:
+
+```
+credentials_sent_at IS NOT NULL  ->  sent
+email_attempts > 0               ->  failed   (sent already excluded)
+otherwise                        ->  pending
+```
+
+In PHP use `$participation->email_status` or the `whereEmailStatus()` /
+`whereEmailStatusNot()` query scopes. In raw SQL use
+`CompetitionUser::EMAIL_STATUS_SQL`. `EmailStatusDerivationTest` checks the PHP
+accessor, the SQL and both scopes against every combination of the two source
+columns, so they cannot drift apart.
+
+> `sent` means the gateway accepted the message. It does **not** mean the
+> contestant received or read it — nothing here tracks real delivery.
 Errors are listed with the gateway's message (capped at 20; the rest stay in
 `competition_users.email_last_error`).
 
