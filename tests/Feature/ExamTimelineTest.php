@@ -41,6 +41,21 @@ class ExamTimelineTest extends TestCase
     /** @return array{0: CompetitionSettings, 1: CompetitionUser} */
     private function started(int $questions = 5, array $overrides = []): array
     {
+        /*
+         * Freeze the clock.
+         *
+         * These cases assert remaining seconds to within a second, so without
+         * this they are really asserting how fast the machine is: the real time
+         * spent between Begin and the assertion comes straight off the answer.
+         * That passes on a developer's laptop and fails on slower CI hardware,
+         * which is a test defect, not a finding.
+         *
+         * Cases that set their own Carbon::setTestNow() first are unaffected -
+         * freezing at now() keeps whatever they chose - and travel() still
+         * moves the clock deliberately.
+         */
+        $this->freezeTime();
+
         $settings = $this->makeCompetition($overrides + ['question_count' => $questions]);
         $this->makeQuestions($settings, $questions);
         $contestant = $this->makeContestant($settings);

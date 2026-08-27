@@ -49,6 +49,13 @@ class ContestantFlowHttpTest extends TestCase
      */
     public function test_the_complete_contestant_flow_works_over_http(): void
     {
+        // The clock is frozen because this case asserts remaining seconds
+        // exactly (35.0 after a 45-second timeout). Real time spent inside the
+        // request cycle comes off that number, so on slower hardware the
+        // assertion measures the machine rather than the engine. travel() still
+        // advances the clock where the test means to.
+        $this->freezeTime();
+
         [$competition, $participation] = $this->portal(5);
 
         // ── login ───────────────────────────────────────────────────────────
@@ -188,6 +195,8 @@ class ContestantFlowHttpTest extends TestCase
 
     public function test_a_contestant_resumes_the_same_question_after_logging_back_in(): void
     {
+        $this->freezeTime();
+
         [, $participation] = $this->portal(4);
 
         $this->actingAs($participation->user);
@@ -213,6 +222,8 @@ class ContestantFlowHttpTest extends TestCase
 
     public function test_the_question_payload_exposes_exactly_the_agreed_keys(): void
     {
+        $this->freezeTime();
+
         [, $participation] = $this->portal(3);
 
         $payload = $this->actingAs($participation->user)
