@@ -127,10 +127,15 @@ class DatabaseContractTest extends TestCase
 
     public function test_the_competition_schema_contains_exactly_three_tables(): void
     {
-        $tables = array_map(
-            fn ($row) => array_values((array) $row)[0],
-            DB::select('SHOW TABLES'),
-        );
+        // BASE TABLE only. `SHOW TABLES` also lists views, and `madad_results`
+        // is one — it stores nothing, it is the published ordering for people
+        // who read the results out of SQL. The guarantee being locked here is
+        // that no fourth place to KEEP data has crept in.
+        $tables = DB::table('information_schema.TABLES')
+            ->where('TABLE_SCHEMA', DB::getDatabaseName())
+            ->where('TABLE_TYPE', 'BASE TABLE')
+            ->pluck('TABLE_NAME')
+            ->all();
 
         $competitionTables = array_values(array_filter(
             $tables,
@@ -142,6 +147,19 @@ class DatabaseContractTest extends TestCase
         sort($expected);
 
         $this->assertSame($expected, $competitionTables, 'the competition schema must be exactly these three tables');
+    }
+
+    public function test_the_only_view_is_the_published_results_ordering(): void
+    {
+        $views = DB::table('information_schema.TABLES')
+            ->where('TABLE_SCHEMA', DB::getDatabaseName())
+            ->where('TABLE_TYPE', 'VIEW')
+            ->pluck('TABLE_NAME')
+            ->all();
+
+        sort($views);
+
+        $this->assertSame(['madad_results'], $views, 'an unexpected view exists');
     }
 
     public function test_every_column_matches_the_agreed_type(): void

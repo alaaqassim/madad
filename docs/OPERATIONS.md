@@ -224,6 +224,56 @@ competition itself is over — and `madad:status --set=closed` already does it.
 
 ---
 
+## 3c. `madad_results` — reading the results straight from SQL
+
+For anyone who queries the database directly rather than running the command —
+the project manager, a committee, a reporting tool:
+
+```sql
+SELECT * FROM madad_results LIMIT 100;    -- the Top 100, correctly ordered
+SELECT * FROM madad_results;              -- every completed contestant
+```
+
+A **view**, not a stored procedure: it composes (`WHERE`, `LIMIT`, `JOIN`), it
+works in every GUI client without `CALL` syntax, and it takes no parameters.
+
+| Column | |
+|---|---|
+| `rank` | 1, 2, 3 … computed by the view. Never stored. |
+| `competition_user_id`, `contestant_name`, `contestant_email` | |
+| `correct_answers`, `total_questions`, `answered_questions` | |
+| `started_at`, `completed_at` | |
+| `duration_seconds` | The tie-break, visible. |
+
+### Why it exists
+
+The ranking is no longer something anyone can write from memory: score DESC,
+then the **shorter attempt**, then `id` for stability. Someone hand-writing that
+`ORDER BY` and omitting the duration term gets a list that looks entirely
+plausible and quietly ignores the tie-break. The view publishes the ordering
+once so nobody has to reconstruct it.
+
+### The drift guard
+
+The view is a **second implementation** of a rule whose authority is
+`ResultService`, so the two could drift the day the rule changes.
+`ResultsViewTest` compares them row by row against data whose ties can only be
+settled by duration. Verified: deleting the duration term from the view fails
+three tests, one of them saying so in as many words. Change the rule in one
+place and the suite stops you.
+
+### What it deliberately does not expose
+
+No `answers`, no `question_order`, no `user_id`, and nothing from `users` — so
+no password hash can leave through it. Only the columns the CSV already
+publishes. Asserted by test.
+
+> **Run `madad:settle --dry-run` first.** The view filters on
+> `exam_status = 'completed'`, so a contestant left mid-exam is absent from it
+> exactly as they are absent from the CSV.
+
+---
+
 ## 4. `madad:results` — the result file
 
 ```bash
