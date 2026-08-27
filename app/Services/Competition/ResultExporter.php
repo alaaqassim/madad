@@ -41,6 +41,7 @@ class ResultExporter
         'answered_questions' => 'answered_questions',
         'started_at' => 'started_at',
         'completed_at' => 'completed_at',
+        'duration_seconds' => 'duration_seconds',
     ];
 
     public function __construct(private readonly ResultService $results) {}

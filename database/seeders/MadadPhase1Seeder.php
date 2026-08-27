@@ -508,7 +508,26 @@ class MadadPhase1Seeder extends Seeder
 
         if ($completed) {
             $startedAt = $this->examDay()->copy()->addSeconds(($index % 900) * 4);
-            $finishedAt = $startedAt->copy()->addSeconds(self::QUESTIONS * $window);
+
+            /*
+             * How long the attempt actually took.
+             *
+             * Every completed fixture used to finish in exactly QUESTIONS x
+             * window seconds, which made every duration identical — and under
+             * the confirmed tie-break (level on score, faster wins) that left
+             * the whole field indistinguishable and the Top-100 boundary
+             * permanently "contested". Useless for exercising the rule.
+             *
+             * So the paper is timed the way it is really spent: a position the
+             * contestant answered costs their own pace, a position the clock
+             * took costs the full window. Deterministic, because the pace comes
+             * from the seeded generator.
+             */
+            $pace = mt_rand(4, $window - 3);
+            $skippedPositions = self::QUESTIONS - $answeredQuestions;
+            $elapsed = ($answeredQuestions * $pace) + ($skippedPositions * $window);
+
+            $finishedAt = $startedAt->copy()->addSeconds($elapsed);
 
             return [
                 'answers' => $answers,

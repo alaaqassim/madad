@@ -397,11 +397,17 @@ class CompetitionExamService
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            // Another tab or device may have settled it first. finalize() is
-            // idempotent, but re-running it would be work for no change.
-            if ($locked->isInProgress()) {
-                $this->finalize($locked, $settings);
-            }
+            /*
+             * Another tab or device may have settled it first; reconcile() is
+             * idempotent and returns immediately for a row already completed.
+             *
+             * Deliberately reconcile() rather than finalize(): it is the one
+             * place that knows whether the PAPER or the CLOCK ended this
+             * attempt, and therefore the only one that can record the right
+             * moment. Settling here with effective_end would mis-time every
+             * contestant whose questions ran out before their hour did.
+             */
+            $this->reconcile($locked, $settings);
 
             $participation->setRawAttributes($locked->getAttributes(), true);
         });
@@ -444,16 +450,32 @@ class CompetitionExamService
         $index = (int) $participation->current_question;
         $startedAt = $participation->started_at ?? $now;
         $effectiveEnd = $settings->effectiveEndFor($startedAt);
+        $anchor = $participation->questionStartedAt() ?? $startedAt;
 
-        // Out of time, or out of paper. Checked before the windows, because a
-        // contestant past effective_end is finished no matter where they sit.
-        if ($now->greaterThanOrEqualTo($effectiveEnd) || $index >= $count) {
-            $this->finalize($participation, $settings);
+        /*
+         * Where this attempt runs out, and WHEN.
+         *
+         * Two things can end it and the earlier one wins: the paper (every
+         * remaining position spending its window, one after another from the
+         * live anchor) or the clock (the personal allowance, or the
+         * availability window — effective_end is already their minimum).
+         *
+         * Computing the moment up front is what makes completed_at truthful.
+         * Testing `now >= effective_end` first would blame the clock for an
+         * exam the paper had finished an hour earlier, and since duration is
+         * the tie-break that would cost the contestant places they had won.
+         *
+         * The condition is equivalent to the old one: now >= paper_end holds
+         * exactly when the elapsed windows would have consumed the order.
+         */
+        $paperEnd = $anchor->copy()->addSeconds(max(0, $count - $index) * $seconds);
+        $trueEnd = $paperEnd->lessThan($effectiveEnd) ? $paperEnd : $effectiveEnd;
+
+        if ($now->greaterThanOrEqualTo($trueEnd)) {
+            $this->finalize($participation, $settings, $trueEnd);
 
             return;
         }
-
-        $anchor = $participation->questionStartedAt() ?? $startedAt;
 
         $elapsed = max(0.0, $anchor->diffInMilliseconds($now, false) / 1000);
         $windows = (int) floor($elapsed / $seconds);
@@ -462,21 +484,15 @@ class CompetitionExamService
             return;
         }
 
+        // Strictly inside the paper: now < paper_end, so the windows elapsed
+        // cannot have consumed the order.
         $target = min($count, $index + $windows);
 
         $participation->forceFill([
             'answers' => $this->markSkipped($participation, $count, $index, $target),
             'current_question' => $target,
             'current_question_started_at' => $anchor->copy()->addSeconds(($target - $index) * $seconds),
-        ]);
-
-        if ($target >= $count) {
-            $this->finalize($participation, $settings);
-
-            return;
-        }
-
-        $participation->save();
+        ])->save();
     }
 
     /**
@@ -514,7 +530,8 @@ class CompetitionExamService
         ]);
 
         if ($index + 1 >= $count) {
-            $this->finalize($participation, $settings);
+            // Finished by answering: the exam ended at this answer.
+            $this->finalize($participation, $settings, now());
 
             return;
         }
@@ -550,7 +567,8 @@ class CompetitionExamService
         ]);
 
         if ($index + 1 >= $count) {
-            $this->finalize($participation, $settings);
+            // The paper ran out when this window closed.
+            $this->finalize($participation, $settings, $anchor);
 
             return;
         }
@@ -566,9 +584,24 @@ class CompetitionExamService
      * the answers it summarises. Only answers that were actually recorded count
      * — a position the clock took is a '-' and scores nothing. Safe to call
      * repeatedly; completed_at never moves once set.
+     *
+     * ─── completed_at IS A RANKING INPUT ────────────────────────────────────
+     * Under the confirmed tie-break, contestants level on score are separated
+     * by how long they took: completed_at − started_at, shortest first. That
+     * makes this timestamp load-bearing, so every caller passes the moment the
+     * exam ACTUALLY ended — the last answer, the close of the last window, or
+     * effective_end — rather than letting it default to "whenever a request
+     * happened to notice". A contestant who walked away and reopened the page
+     * two hours later would otherwise record a two-hour attempt and lose a tie
+     * they should have won.
+     *
+     * @param  Carbon|null  $endedAt  the real end; clamped into [started_at, effective_end]
      */
-    private function finalize(CompetitionUser $participation, CompetitionSettings $settings): void
-    {
+    private function finalize(
+        CompetitionUser $participation,
+        CompetitionSettings $settings,
+        ?Carbon $endedAt = null,
+    ): void {
         $count = $settings->questionCount();
         $order = $participation->order();
 
@@ -608,8 +641,35 @@ class CompetitionExamService
             'answered_questions' => $answered,
             'exam_status' => CompetitionUser::EXAM_COMPLETED,
             'current_question_started_at' => null,
-            'completed_at' => $participation->completed_at ?? now(),
+            'completed_at' => $participation->completed_at ?? $this->endMoment($participation, $settings, $endedAt),
         ])->save();
+    }
+
+    /**
+     * The moment an exam ended, bounded by its own attempt.
+     *
+     * A caller's candidate is trusted but never allowed outside
+     * [started_at, effective_end]: an end before the start is impossible, and
+     * one after effective_end would credit a contestant with time the rules
+     * never gave them. Both bounds hold by construction today; clamping here
+     * means a future caller cannot break the ranking by getting it wrong.
+     */
+    private function endMoment(
+        CompetitionUser $participation,
+        CompetitionSettings $settings,
+        ?Carbon $endedAt,
+    ): Carbon {
+        $now = now();
+        $startedAt = $participation->started_at ?? $now;
+        $effectiveEnd = $settings->effectiveEndFor($startedAt);
+
+        $end = ($endedAt ?? $now)->copy();
+
+        if ($end->greaterThan($effectiveEnd)) {
+            $end = $effectiveEnd->copy();
+        }
+
+        return $end->lessThan($startedAt) ? $startedAt->copy() : $end;
     }
 
     /**

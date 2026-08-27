@@ -34,18 +34,20 @@ class ResultExportTest extends TestCase
         parent::tearDown();
     }
 
-    private function completed(int $correct, ?string $name = null): CompetitionUser
+    private function completed(int $correct, ?string $name = null, int $minutes = 30): CompetitionUser
     {
         $participation = $this->makeContestant(
             CompetitionSettings::current(),
             $name === null ? [] : ['contestant_name' => $name],
         );
 
+        $startedAt = now()->subMinutes(90);
+
         $participation->forceFill([
             'contestant_name' => $name ?? $participation->contestant_name,
             'exam_status' => CompetitionUser::EXAM_COMPLETED,
-            'started_at' => now()->subMinutes(30),
-            'completed_at' => now(),
+            'started_at' => $startedAt,
+            'completed_at' => $startedAt->copy()->addMinutes($minutes),
             'correct_answers' => $correct,
             'answered_questions' => 75,
         ])->save();
@@ -119,6 +121,7 @@ class ResultExportTest extends TestCase
             'answered_questions',
             'started_at',
             'completed_at',
+            'duration_seconds',
         ], $header);
 
         $this->assertSame('1', $row[0]);
@@ -221,13 +224,15 @@ class ResultExportTest extends TestCase
 
         $this->assertSame(100, $payload['returned']);
         $this->assertSame(1, $payload['cutoff_score']);
+        $this->assertSame('fastest_completion', $payload['tie_break_rule']);
+        // All five took exactly the same time, so the faster-wins rule has
+        // nothing to separate them with — the one case still needing a human.
         $this->assertTrue($payload['cutoff_is_contested']);
         $this->assertSame(5, $payload['contestants_tied_at_cutoff']);
-        // The tie-break is still an open business decision and must stay null.
-        $this->assertNull($payload['tie_break_rule']);
+        $this->assertSame(3, $payload['contestants_indistinguishable_at_cutoff']);
 
         $this->artisan('madad:results', ['--top' => 100, '--export' => $this->path])
-            ->expectsOutputToContain('WARNING: Top-100 cutoff is tied and requires a business decision.')
+            ->expectsOutputToContain('WARNING: Top-100 cutoff cannot be settled by the tie-break.')
             ->assertExitCode(0);
     }
 

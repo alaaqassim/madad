@@ -189,7 +189,8 @@ byte-identical file.
 | `total_questions` | `competitions.question_count` |
 | `answered_questions` | Stored aggregate |
 | `started_at` | ISO 8601 |
-| `completed_at` | ISO 8601 |
+| `completed_at` | ISO 8601. The moment the exam **ended** — the last answer, the close of the last window, or the deadline — not the moment the server noticed. |
+| `duration_seconds` | `completed_at − started_at`. **The tie-break made auditable**: without it nobody could check why the boundary fell where it did. |
 
 No password, no hash, no answer key, no per-question detail, no internal secret.
 A name beginning `=`, `+`, `-` or `@` is prefixed with a single quote so Excel
@@ -199,25 +200,55 @@ treats it as text instead of evaluating it as a formula.
 > with a BOM is what Excel needs for Arabic. A real `.xlsx` requirement would be
 > a new decision with a new dependency behind it.
 
-### Top 100 and the tie
-
-Ordering is `correct_answers DESC` **and nothing else**. `id ASC` is appended
-purely so repeated extractions return rows in the same order — a stability
-device, **not** a ranking rule, and it must not be presented to the business as
-one. `tie_break_rule` is `null` in every payload.
-
-If more contestants share the cutoff score than there are places remaining, the
-command says so:
+### Top 100 and the tie-break
 
 ```
-WARNING: Top-100 cutoff is tied and requires a business decision.
-CUTOFF CONTESTED: 5 contestants share the cutoff score of 37, which is more than
-the places remaining. No tie-break rule exists, so the boundary of this list is
-NOT decided. A business ruling is required.
+1. correct_answers   DESC     the score
+2. duration          ASC      completed_at − started_at — THE TIE-BREAK
+3. id                ASC      stability only, never a ruling
 ```
 
-Nobody on an equal score is silently discarded. Rank is never stored: it is a
-property of a query, not of a contestant.
+**The confirmed rule: level on score, the faster attempt wins.** It is applied
+as a secondary sort rather than only at the boundary, so it settles the case it
+was asked for — the 101st matching the 100th — and stays consistent everywhere
+else. `tie_break_rule` is `fastest_completion` in every payload.
+
+**Duration, not finishing time.** Whoever begins later inside a window that is
+open for hours is not slower for it, so what counts is the contestant's own
+clock. A contestant who began at 10:00 and took 20 minutes beats one who began
+at 09:00 and took 50, even though the second finished first by the wall clock.
+
+`id ASC` remains a stability device for repeatable extractions, **not** a
+ranking rule, and it must not be presented to the business as one.
+
+The command shows how the boundary was settled:
+
+```
+cutoff: 5 contestants scored 37; separated by duration, and the last place
+went to an attempt of 41:20.
+```
+
+### The one case still needing a human
+
+If someone outside the list matches the last place on **both** score and
+duration, the rule cannot separate them and the command refuses to pretend:
+
+```
+WARNING: Top-100 cutoff cannot be settled by the tie-break.
+CUTOFF CONTESTED: 2 contestant(s) outside this list match the last place on BOTH
+score (37) and duration (41:20). The faster-wins rule cannot separate them, so
+the boundary of this list is NOT decided. A business ruling is required.
+```
+
+Duration is compared to the microsecond, so this is rare — but it is possible,
+and nobody on an equal footing is silently discarded. Rank is never stored: it
+is a property of a query, not of a contestant.
+
+> **Why `completed_at` had to be made exact.** Finalisation is lazy: it happens
+> on the first request after the exam is over. Recording `now()` at that point
+> would have given a contestant who walked away at 09:50 and reopened the page
+> at 11:30 a 2½-hour attempt — losing a tie they had won. Every finalising path
+> now passes the real end instead.
 
 ---
 

@@ -61,9 +61,14 @@ class MadadExportResults extends Command
 
         if (! $csvPath && ! $this->option('json')) {
             $this->table(
-                ['#', 'name', 'email', 'correct', 'answered'],
+                ['#', 'name', 'email', 'correct', 'answered', 'duration'],
                 collect($payload['rows'])->values()->map(fn ($r, $i) => [
-                    $i + 1, $r['name'], $r['email'], $r['correct_answers'], $r['answered_questions'],
+                    $i + 1,
+                    $r['name'],
+                    $r['email'],
+                    $r['correct_answers'],
+                    $r['answered_questions'],
+                    $r['duration_seconds'] === null ? '—' : gmdate('i:s', $r['duration_seconds']),
                 ])->all(),
             );
         }
@@ -72,14 +77,26 @@ class MadadExportResults extends Command
         $this->line("completed: {$payload['total_completed']}   returned: {$payload['returned']}   cutoff score: ".($payload['cutoff_score'] ?? '—'));
         $this->line("ordered by: {$payload['ordered_by']}   tie-break rule: ".($payload['tie_break_rule'] ?? 'NONE (undecided)'));
 
-        if ($payload['cutoff_is_contested']) {
-            $this->newLine();
-            $this->warn(sprintf('WARNING: Top-%d cutoff is tied and requires a business decision.', $payload['limit']));
-            $this->warn(sprintf(
-                'CUTOFF CONTESTED: %d contestants share the cutoff score of %d, which is more than the places remaining. '
-                .'No tie-break rule exists, so the boundary of this list is NOT decided. A business ruling is required.',
+        // How the boundary was actually settled, in the operator's own terms.
+        if ($payload['cutoff_score'] !== null && $payload['contestants_tied_at_cutoff'] > 1) {
+            $this->line(sprintf(
+                'cutoff: %d contestants scored %d; separated by duration, and the last place went to an attempt of %s.',
                 $payload['contestants_tied_at_cutoff'],
                 $payload['cutoff_score'],
+                $payload['cutoff_duration_seconds'] === null ? '—' : gmdate('i:s', $payload['cutoff_duration_seconds']),
+            ));
+        }
+
+        if ($payload['cutoff_is_contested']) {
+            $this->newLine();
+            $this->warn(sprintf('WARNING: Top-%d cutoff cannot be settled by the tie-break.', $payload['limit']));
+            $this->warn(sprintf(
+                'CUTOFF CONTESTED: %d contestant(s) outside this list match the last place on BOTH score (%d) and '
+                .'duration (%s). The faster-wins rule cannot separate them, so the boundary of this list is NOT '
+                .'decided. A business ruling is required.',
+                $payload['contestants_indistinguishable_at_cutoff'],
+                $payload['cutoff_score'],
+                $payload['cutoff_duration_seconds'] === null ? '—' : gmdate('i:s', $payload['cutoff_duration_seconds']),
             ));
         }
 
