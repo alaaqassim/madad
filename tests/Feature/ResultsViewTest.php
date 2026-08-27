@@ -162,6 +162,93 @@ class ResultsViewTest extends TestCase
         }
     }
 
+    // ── madad_top100 ────────────────────────────────────────────────────────
+
+    public function test_the_top_hundred_view_holds_the_first_hundred(): void
+    {
+        $this->makeCompetition(['question_count' => 75]);
+
+        for ($i = 0; $i < 130; $i++) {
+            $this->finisher(75 - (int) ($i / 2), 10 + ($i % 37), 300 - $i);
+        }
+
+        $top = DB::table('madad_top100')->orderBy('rank')->get();
+
+        $this->assertCount(100, $top);
+        $this->assertSame(1, (int) $top->first()->rank);
+        $this->assertSame(100, (int) $top->last()->rank);
+
+        // It must be the SAME hundred the service returns, in the same order.
+        $fromService = app(ResultService::class)->completed(100)->pluck('id')->all();
+
+        $this->assertSame($fromService, array_map('intval', $top->pluck('competition_user_id')->all()));
+    }
+
+    public function test_the_top_hundred_view_returns_everyone_when_the_field_is_smaller(): void
+    {
+        $this->field();   // seven contestants
+
+        $this->assertCount(7, DB::table('madad_top100')->get());
+    }
+
+    public function test_a_contestant_outside_the_hundred_is_absent_from_it_but_ranked_in_the_full_view(): void
+    {
+        $this->makeCompetition(['question_count' => 75]);
+
+        for ($i = 0; $i < 105; $i++) {
+            $this->finisher(75 - (int) ($i / 2), 10 + ($i % 37), 300 - $i);
+        }
+
+        $ranked = DB::table('madad_results')->orderByDesc('rank')->first();
+
+        $this->assertSame(105, (int) $ranked->rank, 'the full view must rank everybody');
+        $this->assertNull(
+            DB::table('madad_top100')->where('competition_user_id', $ranked->competition_user_id)->first(),
+            'someone past the cutoff appeared in the winners list',
+        );
+    }
+
+    public function test_looking_up_one_contestant_still_gives_their_true_rank(): void
+    {
+        $this->field();
+
+        // Third overall: 70 correct in 41 minutes, the slowest of the three.
+        $expected = app(ResultService::class)->completed()->pluck('id')->all()[2];
+
+        $row = DB::table('madad_results')->where('competition_user_id', $expected)->first();
+
+        $this->assertNotNull($row, 'an individual lookup returned nothing');
+        $this->assertSame(
+            3,
+            (int) $row->rank,
+            'filtering the view changed the rank - the window function was merged away',
+        );
+    }
+
+    public function test_both_views_agree_where_they_overlap(): void
+    {
+        $this->makeCompetition(['question_count' => 75]);
+
+        for ($i = 0; $i < 120; $i++) {
+            $this->finisher(75 - (int) ($i / 2), 10 + ($i % 37), 300 - $i);
+        }
+
+        $fromFull = DB::table('madad_results')->orderBy('rank')->limit(100)->pluck('competition_user_id')->all();
+        $fromTop = DB::table('madad_top100')->orderBy('rank')->pluck('competition_user_id')->all();
+
+        $this->assertSame($fromFull, $fromTop, 'the two views disagree about who is in the top 100');
+    }
+
+    public function test_the_top_hundred_view_carries_the_same_columns(): void
+    {
+        $this->field();
+
+        $this->assertSame(
+            array_keys((array) DB::table('madad_results')->first()),
+            array_keys((array) DB::table('madad_top100')->first()),
+        );
+    }
+
     public function test_the_top_hundred_is_a_plain_limit(): void
     {
         $this->makeCompetition(['question_count' => 75]);

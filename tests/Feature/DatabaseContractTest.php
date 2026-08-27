@@ -158,7 +158,7 @@ class DatabaseContractTest extends TestCase
 
         sort($views);
 
-        $this->assertSame(['madad_results'], $views, 'an unexpected view exists');
+        $this->assertSame(['madad_results', 'madad_top100'], $views, 'an unexpected view exists');
     }
 
     public function test_every_column_matches_the_agreed_type(): void

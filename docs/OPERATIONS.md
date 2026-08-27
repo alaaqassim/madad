@@ -248,9 +248,25 @@ For anyone who queries the database directly rather than running the command —
 the project manager, a committee, a reporting tool:
 
 ```sql
-SELECT * FROM madad_results LIMIT 100;    -- the Top 100, correctly ordered
-SELECT * FROM madad_results;              -- every completed contestant
+SELECT * FROM madad_top100;                              -- the winners
+SELECT * FROM madad_results;                             -- everyone, ranked
+SELECT * FROM madad_results WHERE contestant_email = ?;  -- one contestant's rank
 ```
+
+Two views, two questions:
+
+| | |
+|---|---|
+| `madad_top100` | **who won** — the first 100, nothing else |
+| `madad_results` | **where is X ranked** — every completed contestant |
+
+`madad_top100` is defined on top of `madad_results`, so the ranking lives in one
+place and changing the tie-break changes both.
+
+Looking one contestant up in `madad_results` returns their **true** rank even
+though the `WHERE` runs outside the view: `ROW_NUMBER()` stops MariaDB merging
+the view into the outer query, so the ranking is computed over the whole field
+first and filtered afterwards. Asserted by test, not assumed.
 
 A **view**, not a stored procedure: it composes (`WHERE`, `LIMIT`, `JOIN`), it
 works in every GUI client without `CALL` syntax, and it takes no parameters.
