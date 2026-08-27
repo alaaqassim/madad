@@ -25,8 +25,26 @@ Route::get('/', function () {
 */
 
 Route::prefix('api')->name('api.')->group(function (): void {
+    /*
+     * Two limits guard this route, and they do different jobs.
+     *
+     * LoginRequest holds the one that stops password guessing: five attempts
+     * keyed by email and address, counted only on failure and cleared the
+     * moment a login succeeds.
+     *
+     * This one is keyed by address alone and counts every request, successful
+     * or not - so it is a flood limit, not an attempt limit, and it must be set
+     * for a shared address. Contestants sit exams in halls, on university
+     * networks and behind carrier NAT, where hundreds of them are one address
+     * to us. The busiest minute of the whole competition is the one where they
+     * all log in at once; a low number here would lock out everyone after the
+     * first few and take the competition down at exactly the wrong moment.
+     *
+     * 300 a minute is far above any hall of contestants and far below anything
+     * a script would do.
+     */
     Route::post('login', [SessionController::class, 'store'])
-        ->middleware(['guest', 'throttle:6,1'])
+        ->middleware(['guest', 'throttle:300,1'])
         ->name('login');
 
     // Public so a closed portal can say so without forcing a login first.
