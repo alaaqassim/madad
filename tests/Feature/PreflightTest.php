@@ -313,6 +313,72 @@ class PreflightTest extends TestCase
         $this->assertStringContainsString('PASS', (string) $this->detail($report->checks, 'email format'));
     }
 
+    public function test_a_contestant_with_no_name_is_a_blocker(): void
+    {
+        $competition = $this->healthyCompetition();
+        $contestant = $this->makeContestant($competition);
+
+        DB::table('competition_users')->where('id', $contestant->id)->update(['contestant_name' => '   ']);
+
+        $report = $this->preflight()->run($competition);
+
+        $this->assertFalse($report->passed());
+        $this->assertStringContainsString('FAIL', (string) $this->detail($report->checks, 'blank names'));
+    }
+
+    public function test_a_roster_imported_with_the_wrong_character_set_is_a_blocker(): void
+    {
+        $competition = $this->healthyCompetition();
+        $contestant = $this->makeContestant($competition);
+
+        // Exactly what "أحمد محمد" becomes when a UTF-8 file is read as a
+        // single-byte set - the classic result of saving plain CSV out of Excel
+        // in an Arabic locale.
+        DB::table('competition_users')
+            ->where('id', $contestant->id)
+            ->update(['contestant_name' => 'Ø£Ø­Ù…Ø¯ Ù…Ø­Ù…Ø¯']);
+
+        $report = $this->preflight()->run($competition);
+
+        $this->assertFalse($report->passed());
+        $this->assertStringContainsString('FAIL', (string) $this->detail($report->checks, 'name encoding'));
+        $this->assertStringContainsString("row {$contestant->id}", (string) $this->detail($report->checks, 'name encoding'));
+    }
+
+    public function test_a_name_a_decoder_gave_up_on_is_a_blocker(): void
+    {
+        $competition = $this->healthyCompetition();
+        $contestant = $this->makeContestant($competition);
+
+        DB::table('competition_users')
+            ->where('id', $contestant->id)
+            ->update(['contestant_name' => "أحمد \u{FFFD} محمد"]);
+
+        $report = $this->preflight()->run($competition);
+
+        $this->assertStringContainsString('FAIL', (string) $this->detail($report->checks, 'name encoding'));
+    }
+
+    public function test_real_names_are_not_mistaken_for_broken_ones(): void
+    {
+        // The encoding rule must not fire on names people actually have. The
+        // Scandinavian and French ones matter most: they carry the very letters
+        // the rule looks for, beside ASCII rather than beside each other.
+        $competition = $this->healthyCompetition();
+
+        foreach (['أحمد عبد الله', 'سارة الجبوري', 'Ørsted Hansen', 'Benoît Français', "O'Brien", 'Ana Sánchez', 'محمد ﷴ'] as $i => $name) {
+            $this->makeContestant($competition, [
+                'contestant_name' => $name,
+                'contestant_email' => "name{$i}@madad.test",
+            ]);
+        }
+
+        $report = $this->preflight()->run($competition);
+
+        $this->assertStringContainsString('PASS', (string) $this->detail($report->checks, 'name encoding'));
+        $this->assertStringContainsString('PASS', (string) $this->detail($report->checks, 'blank names'));
+    }
+
     public function test_an_orphan_account_link_is_a_blocker(): void
     {
         $competition = $this->healthyCompetition();

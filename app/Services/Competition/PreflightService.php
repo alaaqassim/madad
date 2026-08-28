@@ -5,6 +5,7 @@ namespace App\Services\Competition;
 use App\Models\CompetitionQuestion;
 use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -391,6 +392,8 @@ class PreflightService
             'every contestant email is a well formed address',
         );
 
+        $checks = array_merge($checks, $this->nameChecks($base()));
+
         $orphanUsers = DB::table('competition_users as cu')
             ->leftJoin('users as u', 'u.id', '=', 'cu.user_id')
             ->whereNotNull('cu.user_id')
@@ -682,6 +685,66 @@ class PreflightService
                     ->count(),
                 'completed contestants have no completed_at',
                 'every completed contestant has a completed_at',
+            ),
+        ];
+    }
+
+    /**
+     * Is every contestant's name one a human wrote?
+     *
+     * A name is not needed to log in, so a broken one costs nobody their
+     * exam - which is exactly why nothing else catches it. It is still the
+     * name in their email and the name in the final ranking the doctor reads.
+     *
+     * Both faults below are blockers, and the encoding one for a reason worth
+     * stating: garbled Arabic is never a typo in one row. It means the whole
+     * file was read as the wrong character set, so every name is wrong and the
+     * import has to be redone. That is a thing to discover before the day, not
+     * after nine hundred emails have gone out.
+     *
+     * @return list<PreflightCheck>
+     */
+    private function nameChecks(QueryBuilder $contestants): array
+    {
+        $blank = [];
+        $garbled = [];
+
+        foreach ($contestants->select('id', 'contestant_name')->get() as $row) {
+            $name = (string) $row->contestant_name;
+
+            if (trim($name) === '') {
+                $blank[] = (int) $row->id;
+
+                continue;
+            }
+
+            /*
+             * Two signatures, both of which mean the bytes were decoded wrong.
+             *
+             * U+FFFD is unambiguous: the replacement character exists only
+             * because a decoder gave up.
+             *
+             * The second is UTF-8 Arabic read as a single-byte set. Arabic
+             * letters begin with byte D8 or D9, which surface as Ø and Ù, and
+             * are always followed by another high-Latin character. The pairing
+             * is what makes this safe to assert on: Ørsted and Benoît carry
+             * those letters beside ASCII, never beside another accented one.
+             */
+            if (str_contains($name, "\u{FFFD}") || preg_match('/[ØÙÚÛÃÂ][\x{0080}-\x{00FF}]/u', $name) === 1) {
+                $garbled[] = (int) $row->id;
+            }
+        }
+
+        return [
+            PreflightCheck::forCount(
+                'Contestants', 'blank names', count($blank),
+                'contestants have no name - their email would open "مرحبًا ," ('.$this->firstFew($blank).')',
+                'every contestant has a name',
+            ),
+            PreflightCheck::forCount(
+                'Contestants', 'name encoding', count($garbled),
+                'names were decoded with the wrong character set - the whole import is likely affected ('.$this->firstFew($garbled).')',
+                'every contestant name decodes cleanly',
             ),
         ];
     }
