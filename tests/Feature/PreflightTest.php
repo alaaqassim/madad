@@ -240,6 +240,79 @@ class PreflightTest extends TestCase
         $this->assertNotNull($this->detail($report->failures(), 'completed aggregates'));
     }
 
+    /**
+     * The roster may be loaded straight into the table with SQL, so nothing
+     * validates an address on the way in. These are the two ways that goes
+     * wrong, and both end with a contestant who cannot compete.
+     */
+    public function test_an_email_padded_with_whitespace_is_a_blocker(): void
+    {
+        $competition = $this->healthyCompetition();
+        $contestant = $this->makeContestant($competition);
+
+        // A trailing space: correct to the eye, unique to the index, and
+        // impossible to log in with. Written past the model so it arrives the
+        // way a direct SQL load would.
+        DB::table('competition_users')
+            ->where('id', $contestant->id)
+            ->update(['contestant_email' => $contestant->contestant_email.' ']);
+
+        $report = $this->preflight()->run($competition);
+
+        $this->assertFalse($report->passed());
+        $this->assertStringContainsString(
+            'FAIL',
+            (string) $this->detail($report->checks, 'email whitespace'),
+        );
+        $this->assertStringContainsString("row {$contestant->id}", (string) $this->detail($report->checks, 'email whitespace'));
+    }
+
+    public function test_an_email_that_is_not_an_address_is_a_blocker(): void
+    {
+        $competition = $this->healthyCompetition();
+        $contestant = $this->makeContestant($competition);
+
+        DB::table('competition_users')
+            ->where('id', $contestant->id)
+            ->update(['contestant_email' => 'ahmed.example.com']);
+
+        $report = $this->preflight()->run($competition);
+
+        $this->assertFalse($report->passed());
+        $this->assertStringContainsString('FAIL', (string) $this->detail($report->checks, 'email format'));
+    }
+
+    public function test_a_padded_address_is_reported_once_as_padding_not_twice(): void
+    {
+        $competition = $this->healthyCompetition();
+        $contestant = $this->makeContestant($competition);
+
+        // Padded AND malformed. Trimming is the first thing to try, so it is
+        // reported there and not counted again under format.
+        DB::table('competition_users')
+            ->where('id', $contestant->id)
+            ->update(['contestant_email' => ' ahmed.example.com ']);
+
+        $report = $this->preflight()->run($competition);
+
+        $this->assertStringContainsString('FAIL', (string) $this->detail($report->checks, 'email whitespace'));
+        $this->assertStringContainsString('PASS', (string) $this->detail($report->checks, 'email format'));
+    }
+
+    public function test_ordinary_addresses_raise_neither_complaint(): void
+    {
+        $competition = $this->healthyCompetition();
+
+        foreach (['a.b@madad.test', 'first+tag@sub.madad.test', "o'brien@madad.test"] as $i => $email) {
+            $this->makeContestant($competition, ['contestant_email' => $email]);
+        }
+
+        $report = $this->preflight()->run($competition);
+
+        $this->assertStringContainsString('PASS', (string) $this->detail($report->checks, 'email whitespace'));
+        $this->assertStringContainsString('PASS', (string) $this->detail($report->checks, 'email format'));
+    }
+
     public function test_an_orphan_account_link_is_a_blocker(): void
     {
         $competition = $this->healthyCompetition();

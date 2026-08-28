@@ -344,6 +344,53 @@ class PreflightService
             'every contestant email is unique',
         );
 
+        /*
+         * Is every address one a contestant could actually receive?
+         *
+         * The roster arrives however the operator finds convenient - a direct
+         * SQL load is a supported way to get it in - so the database is the
+         * only thing between a typo and a contestant who cannot compete. It
+         * enforces uniqueness with an index. It enforces nothing at all about
+         * whether an address works.
+         *
+         * The two faults are reported separately because the repair is
+         * different: padding is fixed with a trim, a malformed address has to
+         * be asked for again. Padding is listed first and its rows are not
+         * re-reported below, since trimming is the first thing to try.
+         *
+         * Both are blockers. A contestant who cannot receive their credentials
+         * cannot sit the exam, and finding that out on the day is finding out
+         * too late.
+         */
+        $padded = [];
+        $malformed = [];
+
+        foreach ($base()->select('id', 'contestant_email')->get() as $row) {
+            $email = (string) $row->contestant_email;
+
+            if (trim($email) !== $email) {
+                $padded[] = (int) $row->id;
+
+                continue;
+            }
+
+            if (filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+                $malformed[] = (int) $row->id;
+            }
+        }
+
+        $checks[] = PreflightCheck::forCount(
+            'Contestants', 'email whitespace', count($padded),
+            'emails are padded with spaces - they look right in any listing and can never log in ('.$this->firstFew($padded).')',
+            'no contestant email carries surrounding whitespace',
+        );
+
+        $checks[] = PreflightCheck::forCount(
+            'Contestants', 'email format', count($malformed),
+            'emails are not deliverable addresses ('.$this->firstFew($malformed).')',
+            'every contestant email is a well formed address',
+        );
+
         $orphanUsers = DB::table('competition_users as cu')
             ->leftJoin('users as u', 'u.id', '=', 'cu.user_id')
             ->whereNotNull('cu.user_id')
@@ -637,6 +684,19 @@ class PreflightService
                 'every completed contestant has a completed_at',
             ),
         ];
+    }
+
+    /**
+     * Enough rows to start fixing, without turning a check into a data dump.
+     *
+     * @param  list<int>  $ids
+     */
+    private function firstFew(array $ids, int $show = 5): string
+    {
+        $shown = array_slice($ids, 0, $show);
+        $rest = count($ids) - count($shown);
+
+        return 'row '.implode(', ', $shown).($rest > 0 ? " and {$rest} more" : '');
     }
 
     /** @param  Collection<string, int>  $counts */
