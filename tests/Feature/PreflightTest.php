@@ -110,8 +110,89 @@ class PreflightTest extends TestCase
         $this->assertTrue($report->passed(), 'warnings must not fail the report');
 
         $names = array_map(fn (PreflightCheck $c) => $c->name, $report->warnings());
-        $this->assertContains('credential delivery', $names);
+        $this->assertContains('credential delivery failed', $names);
         $this->assertContains('unprovisioned', $names);
+    }
+
+    /**
+     * The two situations are reported apart, because the remedy differs.
+     *
+     * One number covering both said nothing an operator could act on: a
+     * contestant nobody has tried yet needs `madad:provision`, one whose
+     * delivery bounced needs `--retry-failed`, and one whose address does not
+     * exist needs a telephone. The check has to let those be told apart.
+     */
+    public function test_never_attempted_and_bounced_are_reported_separately(): void
+    {
+        $competition = $this->healthyCompetition();
+
+        $this->makeUnprovisionedContestant($competition);   // never attempted
+
+        $this->makeContestant($competition, [
+            'contestant_email' => 'bounced@madad.test',
+            'credentials_sent_at' => null,
+            'email_attempts' => 1,
+            'email_last_error' => 'SMTP 550 5.1.1 recipient address rejected: user unknown',
+        ]);
+
+        $report = $this->preflight()->run($competition);
+
+        $notSent = (string) $this->detail($report->checks, 'credentials not yet sent');
+        $failed = (string) $this->detail($report->checks, 'credential delivery failed');
+
+        $this->assertStringContainsString('never been attempted', $notSent);
+        $this->assertStringContainsString('madad:provision', $notSent);
+        $this->assertStringNotContainsString('retry-failed', $notSent, 'a contestant never tried does not need a retry');
+
+        $this->assertStringContainsString('--retry-failed', $failed);
+    }
+
+    public function test_the_reason_a_delivery_failed_is_reported_with_its_count(): void
+    {
+        $competition = $this->healthyCompetition();
+
+        // Six dead addresses and two timeouts. The operator has to see that the
+        // six will never succeed however often they retry, and the two will.
+        foreach (range(1, 6) as $i) {
+            $this->makeContestant($competition, [
+                'contestant_email' => "dead{$i}@madad.test",
+                'credentials_sent_at' => null,
+                'email_attempts' => 2,
+                'email_last_error' => 'SMTP 550 5.1.1 recipient address rejected: user unknown',
+            ]);
+        }
+
+        foreach (range(1, 2) as $i) {
+            $this->makeContestant($competition, [
+                'contestant_email' => "slow{$i}@madad.test",
+                'credentials_sent_at' => null,
+                'email_attempts' => 1,
+                'email_last_error' => 'gateway timeout after 30s',
+            ]);
+        }
+
+        $report = $this->preflight()->run($competition);
+        $detail = (string) $this->detail($report->checks, 'credential delivery failed');
+
+        $this->assertStringContainsString('8 contestants', $detail);
+        $this->assertStringContainsString('6 × SMTP 550', $detail);
+        $this->assertStringContainsString('2 × gateway timeout', $detail);
+
+        // Commonest first, so the biggest problem is the first thing read.
+        $this->assertLessThan(
+            strpos($detail, 'gateway timeout'),
+            strpos($detail, 'SMTP 550'),
+            'the reasons are not ordered by how many contestants they affect',
+        );
+
+        $this->assertTrue($report->passed(), 'reporting a reason must not turn it into a blocker');
+    }
+
+    public function test_nothing_is_reported_when_every_credential_landed(): void
+    {
+        $competition = $this->healthyCompetition();
+
+        $this->assertNull($this->detail($this->preflight()->run($competition)->checks, 'credential delivery failed'));
     }
 
     public function test_the_command_exits_zero_on_warnings_but_non_zero_under_strict(): void

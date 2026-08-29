@@ -349,13 +349,7 @@ class PreflightService
             $checks[] = PreflightCheck::warning('Contestants', 'unprovisioned', "{$notProvisioned} participations have no account and cannot log in");
         }
 
-        $undelivered = (int) ($emails[CompetitionUser::EMAIL_PENDING] ?? 0) + (int) ($emails[CompetitionUser::EMAIL_FAILED] ?? 0);
-
-        if ($undelivered > 0) {
-            // Explicitly a warning. Launch is not blocked by delivery failures
-            // unless the business states that rule.
-            $checks[] = PreflightCheck::warning('Contestants', 'credential delivery', "{$undelivered} contestants have not been sent credentials (pending or failed) - not a launch blocker under any stated rule");
-        }
+        $checks = array_merge($checks, $this->deliveryChecks($emails, $base()));
 
         // Case-insensitive duplicates: two rows differing only in case are two
         // people to the database but one person to the doctor.
@@ -714,6 +708,71 @@ class PreflightService
                 'every completed contestant has a completed_at',
             ),
         ];
+    }
+
+    /**
+     * Who has not been told their password, and what the operator does about it.
+     *
+     * These were one warning holding one number - "150 have not been sent
+     * credentials" - which is true and useless. It merged two situations whose
+     * remedies are different, and said nothing about why any delivery failed,
+     * so the operator reading it could not tell whether it was a command away
+     * or needed a telephone.
+     *
+     * Split, and with the gateway's own words reported. A count of "10 ×
+     * recipient address rejected: user unknown" tells an operator more than any
+     * classification of ours could, and does not go stale when the mail
+     * provider changes its wording.
+     *
+     * Both stay warnings. Preflight's rule is that FAIL means the competition
+     * cannot correctly run, and a contestant who never learned their password
+     * does not stop it running - they are absent from it. An operator who wants
+     * any of this to stop them has `--strict`, which is the existing and
+     * correct way to say so.
+     *
+     * @param  Collection<string, int>  $emails
+     * @return list<PreflightCheck>
+     */
+    private function deliveryChecks(Collection $emails, QueryBuilder $contestants): array
+    {
+        $checks = [];
+
+        $pending = (int) ($emails[CompetitionUser::EMAIL_PENDING] ?? 0);
+        $failed = (int) ($emails[CompetitionUser::EMAIL_FAILED] ?? 0);
+
+        if ($pending > 0) {
+            $checks[] = PreflightCheck::warning(
+                'Contestants', 'credentials not yet sent',
+                "{$pending} contestants have never been attempted - run `php artisan madad:provision`",
+            );
+        }
+
+        if ($failed === 0) {
+            return $checks;
+        }
+
+        // Grouped by the gateway's message, commonest first. A retry re-issues
+        // rather than resends, which is safe: a contestant whose delivery
+        // genuinely failed never learned the password being replaced.
+        $reasons = $contestants
+            ->whereNull('credentials_sent_at')
+            ->where('email_attempts', '>', 0)
+            ->selectRaw('COALESCE(`email_last_error`, \'(no reason recorded)\') AS reason, COUNT(*) AS c')
+            ->groupBy('reason')
+            ->orderByDesc('c')
+            ->limit(6)
+            ->get();
+
+        $detail = "{$failed} contestants were attempted and did not receive anything"
+            .' - run `php artisan madad:provision --retry-failed`';
+
+        foreach ($reasons as $reason) {
+            $detail .= sprintf("\n           %4d × %s", $reason->c, mb_substr((string) $reason->reason, 0, 70));
+        }
+
+        $checks[] = PreflightCheck::warning('Contestants', 'credential delivery failed', $detail);
+
+        return $checks;
     }
 
     /**
