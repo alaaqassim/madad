@@ -61,6 +61,75 @@ class QuestionOrderTest extends TestCase
         }
     }
 
+    /**
+     * Ids are not a counting sequence and the paper must not assume they are.
+     *
+     * A bank is edited: a question is imported, another is removed, the table
+     * is reloaded. What survives is a set of ids with holes in it that need not
+     * begin at 1. Anything that built a paper from range(1, n) would deal
+     * questions that do not exist and skip ones that do - so the paper is built
+     * from the ids the bank actually holds, and this proves it on a bank shaped
+     * like one that has been edited.
+     */
+    public function test_a_paper_is_built_from_the_ids_the_bank_holds_not_from_a_range(): void
+    {
+        $competition = $this->makeCompetition(['question_count' => 5]);
+        $questions = $this->makeQuestions($competition, 12);
+
+        // Punch holes: keep the 2nd, 5th, 6th, 9th, 11th and 12th. The ids that
+        // remain neither start at 1 nor run consecutively.
+        $keep = [1, 4, 5, 8, 10, 11];
+
+        foreach ($questions as $position => $question) {
+            if (! in_array($position, $keep, true)) {
+                $question->delete();
+            }
+        }
+
+        $survivingIds = array_map(fn ($i) => $questions[$i]->id, $keep);
+        sort($survivingIds);
+
+        $this->assertNotSame(range(1, count($survivingIds)), $survivingIds, 'the fixture failed to create gaps');
+
+        $contestant = $this->makeContestant($competition);
+        $this->exam()->startOrResume($contestant->user, $competition);
+
+        $order = $contestant->refresh()->order();
+
+        $this->assertCount(5, $order);
+        $this->assertEmpty(
+            array_diff($order, $survivingIds),
+            'the paper holds an id that is not in the bank - it was built from a range, not from the table',
+        );
+    }
+
+    public function test_a_paper_built_over_gaps_still_serves_the_right_questions(): void
+    {
+        // The order surviving is not enough: every id in it has to resolve to a
+        // real question when the contestant reaches that position.
+        $competition = $this->makeCompetition(['question_count' => 3]);
+        $questions = $this->makeQuestions($competition, 9);
+
+        foreach ([0, 2, 4, 6] as $position) {
+            $questions[$position]->delete();
+        }
+
+        $contestant = $this->makeContestant($competition);
+        $this->exam()->startOrResume($contestant->user, $competition);
+        $contestant->refresh();
+
+        foreach ($contestant->order() as $position => $questionId) {
+            $served = $this->exam()->state($contestant->refresh(), $competition)['question'];
+
+            $this->assertSame($questionId, $served['question_id'], "position {$position} served the wrong question");
+            $this->assertNotEmpty($served['question_text']);
+
+            $this->exam()->submitAnswer($contestant, $competition, $questionId, 'A');
+        }
+
+        $this->assertTrue($contestant->refresh()->isCompleted());
+    }
+
     public function test_a_second_start_does_not_reshuffle(): void
     {
         $competition = $this->makeCompetition(['question_count' => 5]);
