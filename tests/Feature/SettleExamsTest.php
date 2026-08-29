@@ -109,7 +109,7 @@ class SettleExamsTest extends TestCase
         $contestant->refresh();
 
         $this->assertSame(
-            '2026-09-05T09:02:58+00:00',
+            $this->iso('2026-09-05 09:02:58'),
             $contestant->completed_at->toIso8601String(),
             'the sweep recorded when it ran, not when the exam ended',
         );
@@ -157,7 +157,7 @@ class SettleExamsTest extends TestCase
 
         $this->assertTrue($playing->isCompleted());
         // Cut short AT the closure, so that is the end of their exam.
-        $this->assertSame('2026-09-05T09:10:00+00:00', $playing->completed_at->toIso8601String());
+        $this->assertSame($this->iso('2026-09-05 09:10:00'), $playing->completed_at->toIso8601String());
         $this->assertSame(2, $playing->correct_answers, 'their answers were discarded');
     }
 

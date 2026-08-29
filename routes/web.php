@@ -47,15 +47,36 @@ Route::prefix('api')->name('api.')->group(function (): void {
         ->middleware(['guest', 'throttle:300,1'])
         ->name('login');
 
-    // Public so a closed portal can say so without forcing a login first.
-    Route::get('competition/status', [ExamController::class, 'status'])->name('competition.status');
+    /*
+     * Public so a closed portal can say so without forcing a login first.
+     *
+     * Which is also why the limit is high. Nobody is authenticated here, so the
+     * counter is keyed by address - and a hall of contestants is one address.
+     * This is the first screen anybody sees, and refusing it before they have
+     * even logged in would be a bad answer to a problem they do not have.
+     *
+     * 120 a minute stops a script and cannot be reached by people refreshing.
+     */
+    Route::get('competition/status', [ExamController::class, 'status'])
+        ->middleware('throttle:120,1')
+        ->name('competition.status');
 
     Route::middleware('auth')->group(function (): void {
         Route::post('logout', [SessionController::class, 'destroy'])->name('logout');
 
         Route::prefix('exam')->name('exam.')->group(function (): void {
             Route::post('start', [ExamController::class, 'start'])->name('start');
-            Route::get('current', [ExamController::class, 'currentQuestion'])->name('current');
+            /*
+             * Reading is not free here: every call opens a transaction and
+             * takes a row lock to reconcile elapsed time. An honest contestant
+             * needs it about once every forty seconds, so sixty a minute is
+             * far above any real use and well below a client stuck in a retry
+             * loop. Keyed by the authenticated user once signed in, so one
+             * contestant's runaway tab cannot affect anybody else.
+             */
+            Route::get('current', [ExamController::class, 'currentQuestion'])
+                ->middleware('throttle:60,1')
+                ->name('current');
             Route::post('answer', [ExamController::class, 'submit'])
                 ->middleware('throttle:120,1')
                 ->name('answer');

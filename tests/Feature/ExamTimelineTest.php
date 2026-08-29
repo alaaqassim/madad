@@ -261,7 +261,7 @@ class ExamTimelineTest extends TestCase
 
         $this->assertSame(1, $contestant->refresh()->current_question);
         $this->assertSame(
-            '2026-09-05T08:00:05+00:00',
+            $this->iso('2026-09-05 08:00:05'),
             $contestant->refresh()->current_question_started_at->toIso8601String(),
         );
 
@@ -274,8 +274,8 @@ class ExamTimelineTest extends TestCase
         // away, so they rejoin at position 3 (sequence 4).
         $this->assertSame(3, $contestant->refresh()->current_question);
         $this->assertSame(4, $payload['sequence']);
-        $this->assertSame('2026-09-05T08:01:25+00:00', $payload['opened_at'], '08:00:05 + 2x40');
-        $this->assertSame('2026-09-05T08:02:05+00:00', $payload['expires_at']);
+        $this->assertSame($this->iso('2026-09-05 08:01:25'), $payload['opened_at'], '08:00:05 + 2x40');
+        $this->assertSame($this->iso('2026-09-05 08:02:05'), $payload['expires_at']);
         $this->assertEqualsWithDelta(5.0, $payload['seconds_remaining'], 0.5);
 
         // Positions 1 and 2 are spent, permanently, and scored nothing.
@@ -301,8 +301,8 @@ class ExamTimelineTest extends TestCase
 
         $this->assertSame(22, $contestant->refresh()->current_question, '900s / 40s = 22 windows');
         $this->assertSame(23, $payload['sequence']);
-        $this->assertSame('2026-09-05T08:14:40+00:00', $payload['opened_at']);
-        $this->assertSame('2026-09-05T08:15:20+00:00', $payload['expires_at']);
+        $this->assertSame($this->iso('2026-09-05 08:14:40'), $payload['opened_at']);
+        $this->assertSame($this->iso('2026-09-05 08:15:20'), $payload['expires_at']);
         $this->assertEqualsWithDelta(20.0, $payload['seconds_remaining'], 0.5);
 
         $this->assertSame(str_repeat(CompetitionUser::NO_ANSWER, 22), substr($contestant->answers, 0, 22));
@@ -441,7 +441,7 @@ class ExamTimelineTest extends TestCase
 
         $this->assertSame(3600, $settings->examDurationSeconds());
         $this->assertSame(
-            '2026-09-05T10:00:00+00:00',
+            $this->iso('2026-09-05 10:00:00'),
             $settings->effectiveEndFor(Carbon::parse('2026-09-05 09:00:00'))->toIso8601String(),
         );
     }
@@ -555,7 +555,7 @@ class ExamTimelineTest extends TestCase
         ]);
 
         $this->assertSame(
-            '2026-09-05T11:00:00+00:00',
+            $this->iso('2026-09-05 11:00:00'),
             $settings->effectiveEndFor(now())->toIso8601String(),
             'the contestant was granted time beyond the window',
         );
@@ -586,7 +586,7 @@ class ExamTimelineTest extends TestCase
         $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
 
         $this->assertNotNull($payload);
-        $this->assertSame('2026-09-05T11:00:00+00:00', $payload['expires_at'], 'a question ran past the window');
+        $this->assertSame($this->iso('2026-09-05 11:00:00'), $payload['expires_at'], 'a question ran past the window');
         $this->assertEqualsWithDelta(1.0, $payload['seconds_remaining'], 0.5);
 
         // 11:00:00 — the window is over, and so is the exam.

@@ -87,6 +87,20 @@ class PreflightService
             default => PreflightCheck::warning('Environment', 'application', "APP_ENV={$env} (APP_DEBUG=".($debug ? 'true' : 'false').') - not a production configuration'),
         };
 
+        /*
+         * The zone is reported next to the server's own clock, because the two
+         * disagreeing is exactly the failure this is here to catch: an
+         * application on UTC will happily print an hour an operator reads as
+         * Baghdad, and be three hours out with nothing anywhere saying so.
+         */
+        $zone = (string) config('app.timezone');
+
+        $checks[] = PreflightCheck::pass(
+            'Environment',
+            'timezone',
+            "{$zone} - the server reads ".now()->toDateTimeString().' (competition times mean this zone)',
+        );
+
         $checks[] = $this->pendingMigrationCheck();
 
         return $checks;
@@ -168,11 +182,23 @@ class PreflightService
         $now = now();
         $checks = [];
 
+        /*
+         * Every time printed here names its zone, and that is not decoration.
+         *
+         * MariaDB DATETIME carries no zone, so a bare "09:00" means whatever
+         * the reader assumes it means - and an operator setting the window in
+         * Baghdad hours against an application running in UTC would be three
+         * hours out with this check confirming their mistake. Naming the zone
+         * is the difference between a report that catches that and one that
+         * hides it.
+         */
+        $zone = config('app.timezone');
+
         $window = match (true) {
             $settings->starts_at === null && $settings->ends_at === null => 'no window set - status alone governs access',
-            $settings->starts_at === null => 'until '.$settings->ends_at->toDateTimeString(),
-            $settings->ends_at === null => 'from '.$settings->starts_at->toDateTimeString(),
-            default => $settings->starts_at->toDateTimeString().' to '.$settings->ends_at->toDateTimeString(),
+            $settings->starts_at === null => 'until '.$settings->ends_at->toDateTimeString()." {$zone}",
+            $settings->ends_at === null => 'from '.$settings->starts_at->toDateTimeString()." {$zone}",
+            default => $settings->starts_at->toDateTimeString().' to '.$settings->ends_at->toDateTimeString()." ({$zone})",
         };
 
         $checks[] = $settings->starts_at !== null && $settings->ends_at !== null

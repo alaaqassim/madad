@@ -185,4 +185,18 @@ trait MadadFixtures
 
         return array_values(array_diff(CompetitionQuestion::OPTIONS, [$correct]))[0];
     }
+
+    /**
+     * A wall-clock time, as the API would render it.
+     *
+     * The hour is the assertion; the offset that follows it is not. Writing the
+     * offset out by hand made a change of the application's timezone look like
+     * twenty-eight broken tests, when every one of them held the right hour and
+     * only disagreed about the suffix. So the hour stays visible and the offset
+     * follows the configuration.
+     */
+    protected function iso(string $wallClock): string
+    {
+        return Carbon::parse($wallClock, config('app.timezone'))->toIso8601String();
+    }
 }

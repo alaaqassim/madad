@@ -70,7 +70,7 @@ class CompletionTimestampTest extends TestCase
         $contestant->refresh();
 
         $this->assertTrue($contestant->isCompleted());
-        $this->assertSame('2026-09-05T09:00:15+00:00', $contestant->completed_at->toIso8601String());
+        $this->assertSame($this->iso('2026-09-05 09:00:15'), $contestant->completed_at->toIso8601String());
         $this->assertSame(15, app(ResultService::class)->durationSeconds($contestant));
     }
 
@@ -91,7 +91,7 @@ class CompletionTimestampTest extends TestCase
 
         $this->assertTrue($contestant->isCompleted());
         $this->assertSame(
-            '2026-09-05T09:02:00+00:00',
+            $this->iso('2026-09-05 09:02:00'),
             $contestant->completed_at->toIso8601String(),
             'completed_at recorded when the server noticed, not when the exam ended',
         );
@@ -115,7 +115,7 @@ class CompletionTimestampTest extends TestCase
         $contestant->refresh();
 
         $this->assertSame(
-            '2026-09-05T10:00:00+00:00',
+            $this->iso('2026-09-05 10:00:00'),
             $contestant->completed_at->toIso8601String(),
             'the exam ended at its 60-minute deadline, whatever time anyone looked',
         );
@@ -146,7 +146,7 @@ class CompletionTimestampTest extends TestCase
         $contestant->refresh();
 
         $this->assertTrue($contestant->isCompleted());
-        $this->assertSame('2026-09-05T11:00:00+00:00', $contestant->completed_at->toIso8601String());
+        $this->assertSame($this->iso('2026-09-05 11:00:00'), $contestant->completed_at->toIso8601String());
         // 10:15 to 11:00 is the 45 minutes the window actually allowed.
         $this->assertSame(2700, app(ResultService::class)->durationSeconds($contestant));
     }

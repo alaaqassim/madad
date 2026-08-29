@@ -59,13 +59,19 @@ return [
     | Application Timezone
     |--------------------------------------------------------------------------
     |
-    | Here you may specify the default timezone for your application, which
-    | will be used by the PHP date and date-time functions. The timezone
-    | is set to "UTC" by default as it is suitable for most use cases.
+    | The competition runs in Baghdad and every time anybody says out loud - the
+    | hour the portal opens, the hour it shuts, when a contestant began - is a
+    | Baghdad hour. So the application keeps Baghdad time and stores Baghdad
+    | time, and nobody has to subtract three hours in their head on the morning
+    | of the competition.
+    |
+    | MariaDB DATETIME columns carry no zone, so this setting IS the meaning of
+    | every stored timestamp. Changing it reinterprets every date already in the
+    | database; it must not be changed once a competition holds real data.
     |
     */
 
-    'timezone' => 'UTC',
+    'timezone' => env('APP_TIMEZONE', 'Asia/Baghdad'),
 
     /*
     |--------------------------------------------------------------------------

@@ -59,7 +59,7 @@ class DoctorWorkedExamplesTest extends TestCase
 
         $this->exam()->startOrResume($contestant->user, $settings);
 
-        $this->assertSame('2026-09-05T08:00:00+00:00', $contestant->refresh()->started_at->toIso8601String());
+        $this->assertSame($this->iso('2026-09-05 08:00:00'), $contestant->refresh()->started_at->toIso8601String());
         $this->assertSame(0, $contestant->refresh()->current_question);
 
         // The contestant vanishes. Fifteen minutes of real time pass — no
@@ -74,8 +74,8 @@ class DoctorWorkedExamplesTest extends TestCase
         $this->assertSame(23, $payload['sequence'], 'sequence is the 1-based display of index 22');
 
         // The live window is [08:00 + 22x40, +40) = [08:14:40, 08:15:20).
-        $this->assertSame('2026-09-05T08:14:40+00:00', $payload['opened_at']);
-        $this->assertSame('2026-09-05T08:15:20+00:00', $payload['expires_at']);
+        $this->assertSame($this->iso('2026-09-05 08:14:40'), $payload['opened_at']);
+        $this->assertSame($this->iso('2026-09-05 08:15:20'), $payload['expires_at']);
         $this->assertEqualsWithDelta(20.0, $payload['seconds_remaining'], 0.5);
 
         // The 22 positions the clock passed are spent, and none of them scored.
@@ -107,17 +107,17 @@ class DoctorWorkedExamplesTest extends TestCase
         $this->exam()->startOrResume($contestant->user, $settings);
         $startedAt = $contestant->refresh()->started_at;
 
-        $this->assertSame('2026-09-05T10:15:00+00:00', $startedAt->toIso8601String());
+        $this->assertSame($this->iso('2026-09-05 10:15:00'), $startedAt->toIso8601String());
 
         // personal_end would be 11:15 …
         $this->assertSame(
-            '2026-09-05T11:15:00+00:00',
+            $this->iso('2026-09-05 11:15:00'),
             $startedAt->copy()->addMinutes(60)->toIso8601String(),
         );
 
         // … but effective_end is the earlier of the two.
         $this->assertSame(
-            '2026-09-05T11:00:00+00:00',
+            $this->iso('2026-09-05 11:00:00'),
             $settings->effectiveEndFor($startedAt)->toIso8601String(),
             'the contestant was granted time past the window',
         );
@@ -139,7 +139,7 @@ class DoctorWorkedExamplesTest extends TestCase
         $payload = $this->exam()->currentQuestion($contestant->refresh(), $settings);
 
         $this->assertNotNull($payload);
-        $this->assertSame('2026-09-05T11:00:00+00:00', $payload['expires_at']);
+        $this->assertSame($this->iso('2026-09-05 11:00:00'), $payload['expires_at']);
         $this->assertEqualsWithDelta(1.0, $payload['seconds_remaining'], 0.5);
 
         // 11:00:00 — the exam is over: refused, AND settled as completed with
@@ -156,7 +156,7 @@ class DoctorWorkedExamplesTest extends TestCase
         $contestant->refresh();
 
         $this->assertTrue($contestant->isCompleted(), 'the exam did not complete at 11:00');
-        $this->assertSame('2026-09-05T11:00:00+00:00', $contestant->completed_at->toIso8601String());
+        $this->assertSame($this->iso('2026-09-05 11:00:00'), $contestant->completed_at->toIso8601String());
         $this->assertSame(1, $contestant->answered_questions);
         $this->assertSame(1, $contestant->correct_answers);
     }
@@ -185,7 +185,7 @@ class DoctorWorkedExamplesTest extends TestCase
         $first = $this->exam()->currentQuestion($contestant->refresh(), $settings);
 
         $this->assertSame(1, $first['sequence']);
-        $this->assertSame('2026-09-05T08:00:00+00:00', $first['opened_at']);
+        $this->assertSame($this->iso('2026-09-05 08:00:00'), $first['opened_at']);
 
         // Answered five seconds in — thirty-five seconds early.
         Carbon::setTestNow(Carbon::parse('2026-09-05 08:00:05'));
@@ -196,14 +196,14 @@ class DoctorWorkedExamplesTest extends TestCase
 
         $this->assertNotNull($state['question'], 'the contestant was made to wait');
         $this->assertSame(2, $state['question']['sequence']);
-        $this->assertSame('2026-09-05T08:00:05+00:00', $state['question']['opened_at']);
-        $this->assertSame('2026-09-05T08:00:45+00:00', $state['question']['expires_at']);
+        $this->assertSame($this->iso('2026-09-05 08:00:05'), $state['question']['opened_at']);
+        $this->assertSame($this->iso('2026-09-05 08:00:45'), $state['question']['expires_at']);
         $this->assertEqualsWithDelta(40.0, $state['question']['seconds_remaining'], 0.5);
         $this->assertNotSame($first['question_id'], $state['question']['question_id']);
 
         // And it is DURABLE: the anchor is the moment the answer landed.
         $this->assertSame(
-            '2026-09-05T08:00:05+00:00',
+            $this->iso('2026-09-05 08:00:05'),
             $contestant->refresh()->current_question_started_at->toIso8601String(),
         );
 
@@ -246,8 +246,8 @@ class DoctorWorkedExamplesTest extends TestCase
         $this->assertNotSame($secondQuestionId, $payload['question_id'], 'Q2 came back after its window closed');
         $this->assertSame(3, (int) $contestant->refresh()->current_question);
         $this->assertSame(4, $payload['sequence']);
-        $this->assertSame('2026-09-05T08:01:25+00:00', $payload['opened_at'], '08:00:05 + 2x40');
-        $this->assertSame('2026-09-05T08:02:05+00:00', $payload['expires_at']);
+        $this->assertSame($this->iso('2026-09-05 08:01:25'), $payload['opened_at'], '08:00:05 + 2x40');
+        $this->assertSame($this->iso('2026-09-05 08:02:05'), $payload['expires_at']);
         $this->assertEqualsWithDelta(5.0, $payload['seconds_remaining'], 0.5);
 
         // The two windows that ran out are spent, and scored nothing.
