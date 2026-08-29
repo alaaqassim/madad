@@ -4,6 +4,8 @@ namespace App\Services\Competition;
 
 use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 
 /**
@@ -43,13 +45,46 @@ class ResultService
      * are impossible on a completed row (preflight enforces it) but sort last
      * rather than first if one ever appears.
      */
-    private const DURATION_SQL = 'COALESCE(TIMESTAMPDIFF(MICROSECOND, started_at, completed_at), 9223372036854775807)';
+    private const DURATION_SQL = 'COALESCE(TIMESTAMPDIFF(MICROSECOND, started_at, '.self::ENDED_AT.'), 9223372036854775807)';
+
+    /**
+     * When the attempt ended.
+     *
+     * A settled contestant has completed_at, which is the recorded instant and
+     * is used unchanged. An unsettled one - somebody who walked away and never
+     * came back, so nothing ever marked them finished - is measured at
+     * effective_end_at, the end they were always going to have, written down at
+     * Begin.
+     */
+    private const ENDED_AT = 'COALESCE(completed_at, effective_end_at)';
+
+    /**
+     * Finished, whether or not anybody settled them.
+     *
+     * Filtering on `exam_status` alone made a contestant's presence in the
+     * ranking depend on somebody having run a command. It is stored state, and
+     * it goes stale for precisely the contestant nobody touches again.
+     */
+    private const FINISHED_SQL = "exam_status = 'completed'"
+        .' OR (started_at IS NOT NULL AND effective_end_at IS NOT NULL AND effective_end_at <= NOW(3))';
+
+    /**
+     * Everyone whose exam is over, by the one definition.
+     *
+     * Every count and every list below starts here, so a contestant can never
+     * be ranked by one rule and counted by another.
+     *
+     * @return Builder<CompetitionUser>
+     */
+    private function finished(): Builder
+    {
+        return CompetitionUser::query()->whereRaw('('.self::FINISHED_SQL.')');
+    }
 
     /** @return Collection<int, CompetitionUser> */
     public function completed(?int $limit = null): Collection
     {
-        $query = CompetitionUser::query()
-            ->where('exam_status', CompetitionUser::EXAM_COMPLETED)
+        $query = $this->finished()
             ->select('*')
             ->selectRaw(self::DURATION_SQL.' AS duration_micros')
             ->orderByDesc('correct_answers')
@@ -85,7 +120,7 @@ class ResultService
             'total_questions' => $settings->questionCount(),
             'answered_questions' => $participation->answered_questions,
             'started_at' => $participation->started_at?->toIso8601String(),
-            'completed_at' => $participation->completed_at?->toIso8601String(),
+            'completed_at' => $this->endedAt($participation)?->toIso8601String(),
             // The tie-break made visible. A ranking nobody can audit from the
             // file is a ranking nobody can defend.
             'duration_seconds' => $this->durationSeconds($participation),
@@ -95,11 +130,19 @@ class ResultService
     /** The attempt's length in whole seconds, or null if either anchor is missing. */
     public function durationSeconds(CompetitionUser $participation): ?int
     {
-        if ($participation->started_at === null || $participation->completed_at === null) {
+        $endedAt = $this->endedAt($participation);
+
+        if ($participation->started_at === null || $endedAt === null) {
             return null;
         }
 
-        return (int) floor($participation->started_at->diffInMilliseconds($participation->completed_at, false) / 1000);
+        return (int) floor($participation->started_at->diffInMilliseconds($endedAt, false) / 1000);
+    }
+
+    /** The PHP twin of ENDED_AT, so a row is never ranked one way and reported another. */
+    public function endedAt(CompetitionUser $participation): ?Carbon
+    {
+        return $participation->completed_at ?? $participation->effective_end_at;
     }
 
     /**
@@ -115,8 +158,7 @@ class ResultService
         $last = $rows->last();
         $cutoffScore = $last?->correct_answers;
 
-        $tiedOnScore = $cutoffScore === null ? 0 : CompetitionUser::query()
-            ->where('exam_status', CompetitionUser::EXAM_COMPLETED)
+        $tiedOnScore = $cutoffScore === null ? 0 : $this->finished()
             ->where('correct_answers', $cutoffScore)
             ->count();
 
@@ -131,8 +173,7 @@ class ResultService
         if ($last !== null && $limit > 0) {
             $included = $rows->pluck('id')->all();
 
-            $indistinguishable = CompetitionUser::query()
-                ->where('exam_status', CompetitionUser::EXAM_COMPLETED)
+            $indistinguishable = $this->finished()
                 ->where('correct_answers', $cutoffScore)
                 ->whereIntegerNotInRaw('id', $included)
                 ->whereRaw(self::DURATION_SQL.' = ?', [$last->duration_micros])
@@ -143,8 +184,7 @@ class ResultService
             'competition' => $settings->name,
             'limit' => $limit,
             'returned' => $rows->count(),
-            'total_completed' => CompetitionUser::query()
-                ->where('exam_status', CompetitionUser::EXAM_COMPLETED)
+            'total_completed' => $this->finished()
                 ->count(),
             'ordered_by' => 'correct_answers DESC, duration ASC',
             'tie_break_rule' => 'fastest_completion',

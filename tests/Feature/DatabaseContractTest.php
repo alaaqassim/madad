@@ -85,6 +85,10 @@ class DatabaseContractTest extends TestCase
             'email_last_error' => 'varchar(500)',
             'exam_status' => "enum('not_started','in_progress','completed')",
             'started_at' => 'datetime(3)',
+            // When this attempt runs out, decided once at Begin. It is what
+            // lets a results view see that a contestant has finished without
+            // anything having to run at the moment they do.
+            'effective_end_at' => 'datetime(3)',
             'completed_at' => 'datetime(3)',
             // The Array + Index exam state. question_order is a JSON array held
             // as a string: 75 ids of d digits encode to 75d + 76 characters, so

@@ -137,6 +137,12 @@ class CompetitionExamService
                 $locked->forceFill([
                     'exam_status' => CompetitionUser::EXAM_IN_PROGRESS,
                     'started_at' => $now,
+                    // Written once, from the one place the formula lives, at
+                    // the only moment both its operands are known. Everything
+                    // afterwards reads it; nothing recomputes it. It is what
+                    // lets a results view see that a contestant's time is up
+                    // without anything having to run when it does.
+                    'effective_end_at' => $settings->effectiveEndFor($now),
                     'current_question' => 0,
                     'current_question_started_at' => $now,
                 ]);

@@ -6,6 +6,7 @@ use App\Models\CompetitionQuestion;
 use App\Models\CompetitionSettings;
 use App\Models\CompetitionUser;
 use Illuminate\Database\Query\Builder as QueryBuilder;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -418,7 +419,7 @@ class PreflightService
             'every contestant email is a well formed address',
         );
 
-        $checks = array_merge($checks, $this->nameChecks($base()));
+        $checks = array_merge($checks, $this->nameChecks($base()), $this->endOfExamChecks($settings, $base()));
 
         $orphanUsers = DB::table('competition_users as cu')
             ->leftJoin('users as u', 'u.id', '=', 'cu.user_id')
@@ -712,6 +713,86 @@ class PreflightService
                 'completed contestants have no completed_at',
                 'every completed contestant has a completed_at',
             ),
+        ];
+    }
+
+    /**
+     * The stored end of each attempt, and whether anybody has been left behind.
+     *
+     * `effective_end_at` is written once at Begin from the one place the
+     * formula lives, and every results surface then COMPARES against it rather
+     * than recomputing it. That is what removes the need for anything to run at
+     * the moment a contestant's time expires - and it is only sound while the
+     * stored value still agrees with what the formula would say today.
+     *
+     * It stops agreeing if somebody edits ends_at or exam_duration_minutes
+     * after contestants have begun. The standing rule says not to, which is
+     * exactly why it is checked rather than trusted.
+     *
+     * @return list<PreflightCheck>
+     */
+    private function endOfExamChecks(CompetitionSettings $settings, QueryBuilder $contestants): array
+    {
+        $missing = 0;
+        $drifted = 0;
+        $stranded = 0;
+
+        $windowEnded = $settings->windowHasEnded();
+        $now = now();
+
+        $contestants
+            ->select('id', 'exam_status', 'started_at', 'effective_end_at')
+            ->whereNotNull('started_at')
+            ->orderBy('id')
+            ->chunk(500, function ($rows) use ($settings, $now, $windowEnded, &$missing, &$drifted, &$stranded): void {
+                foreach ($rows as $row) {
+                    if ($row->effective_end_at === null) {
+                        $missing++;
+
+                        continue;
+                    }
+
+                    $stored = Carbon::parse($row->effective_end_at);
+                    $computed = $settings->effectiveEndFor(Carbon::parse($row->started_at));
+
+                    // A second of tolerance: the column holds milliseconds and
+                    // the formula is exact, and a rounding difference is not a
+                    // changed rule.
+                    if (abs($stored->diffInSeconds($computed, false)) > 1) {
+                        $drifted++;
+                    }
+
+                    if ($row->exam_status === CompetitionUser::EXAM_IN_PROGRESS
+                        && ($windowEnded || $stored->lessThanOrEqualTo($now))) {
+                        $stranded++;
+                    }
+                }
+            });
+
+        return [
+            PreflightCheck::forCount(
+                'Exam data', 'stored end of attempt', $missing,
+                'started contestants have no effective_end_at - the results views cannot see them finish',
+                'every started contestant knows when their attempt ends',
+            ),
+            PreflightCheck::forCount(
+                'Exam data', 'end of attempt drift', $drifted,
+                'stored ends disagree with the formula - the window or the allowance was changed mid-competition',
+                'every stored end agrees with the rule that produced it',
+            ),
+            /*
+             * Not fatal to the RESULTS - the views read effective_end_at, so
+             * these contestants are ranked correctly whether or not anybody
+             * settled them. It is fatal to the ROW being honest, and an
+             * operator reading competition_users directly would be misled.
+             */
+            $stranded === 0
+                ? PreflightCheck::pass('Exam data', 'settled', 'no contestant is left marked in_progress past their end')
+                : PreflightCheck::warning(
+                    'Exam data', 'settled',
+                    "{$stranded} contestants are still marked in_progress though their time is up - results are correct"
+                    .' either way, but `madad:settle` would make the rows say so',
+                ),
         ];
     }
 

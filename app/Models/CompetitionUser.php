@@ -108,6 +108,7 @@ class CompetitionUser extends Model
         'email_last_error',
         'exam_status',
         'started_at',
+        'effective_end_at',
         'completed_at',
         'question_order',
         'current_question',
@@ -132,6 +133,7 @@ class CompetitionUser extends Model
             'credentials_generated_at' => 'datetime',
             'credentials_sent_at' => 'datetime',
             'started_at' => 'datetime',
+            'effective_end_at' => 'datetime',
             'current_question_started_at' => 'datetime',
             'completed_at' => 'datetime',
         ];
