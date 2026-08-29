@@ -9,6 +9,7 @@ use App\Models\CompetitionUser;
 use App\Models\User;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * The exam engine — Array + Index with immediate advance.
@@ -180,6 +181,9 @@ class CompetitionExamService
                 ->firstOrFail();
 
             $this->reconcile($locked, $settings);
+            $this->skipVanishedQuestions($locked, $settings);
+            $locked->save();
+
             $participation->setRawAttributes($locked->getAttributes(), true);
 
             if ($locked->isCompleted()) {
@@ -243,6 +247,13 @@ class CompetitionExamService
             }
 
             $this->reconcile($locked, $settings);
+
+            // Before the expected id is read, so a contestant standing on a
+            // question that no longer exists is moved past it here rather than
+            // meeting a 404 from findOrFail() below.
+            $this->skipVanishedQuestions($locked, $settings);
+            $locked->save();
+
             $participation->setRawAttributes($locked->getAttributes(), true);
 
             if ($locked->isCompleted()) {
@@ -638,6 +649,63 @@ class CompetitionExamService
      * own deadline. The anchor moves by exactly s either way — a timeout noticed
      * late must not extend the question that follows it.
      */
+    /**
+     * Step over any position whose question is no longer in the bank.
+     *
+     * A paper names question ids, and a question can be deleted after the paper
+     * was dealt. Preflight calls that a blocker and it should never reach a
+     * contestant - but "should never" is not a plan, and what happened without
+     * this was the worst possible answer: findOrFail() raised a 404 from inside
+     * the exam, so the contestant sat on an error screen unable to read the
+     * question or answer it until the window timed out.
+     *
+     * Skipped rather than expired, and the distinction is deliberate. The
+     * position is marked unanswered because nobody could have answered it, but
+     * the clock is NOT charged for it: the next question opens now, with a full
+     * window. A contestant must not lose forty seconds to our data problem.
+     *
+     * Bounded by the paper length so a bank emptied entirely cannot spin.
+     */
+    private function skipVanishedQuestions(CompetitionUser $participation, CompetitionSettings $settings): void
+    {
+        $count = $settings->questionCount();
+
+        for ($guard = 0; $guard <= $count; $guard++) {
+            $index = (int) $participation->current_question;
+
+            if ($index >= $count) {
+                return;
+            }
+
+            $questionId = $participation->questionIdAt($index);
+
+            if ($questionId !== null && CompetitionQuestion::query()->whereKey($questionId)->exists()) {
+                return;
+            }
+
+            Log::warning('Madad: a question on a live paper is missing from the bank', [
+                'competition_user_id' => $participation->id,
+                'position' => $index,
+                'question_id' => $questionId,
+            ]);
+
+            $answers = $this->paddedAnswers($participation, $count);
+            $answers[$index] = CompetitionUser::NO_ANSWER;
+
+            $participation->forceFill([
+                'answers' => $answers,
+                'current_question' => $index + 1,
+                'current_question_started_at' => now(),
+            ]);
+
+            if ($index + 1 >= $count) {
+                $this->finalize($participation, $settings);
+
+                return;
+            }
+        }
+    }
+
     private function expireCurrent(CompetitionUser $participation, CompetitionSettings $settings): void
     {
         $count = $settings->questionCount();

@@ -11,6 +11,8 @@ use App\Services\Competition\CompetitionExamService;
 use App\Services\Competition\CompetitionGate;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * Thin by design: every decision lives in CompetitionExamService.
@@ -113,13 +115,33 @@ class ExamController extends Controller
             $request->selectedOption(),
         );
 
-        // The tail of the answer is the same state the client would have got by
-        // asking, so a submission needs no follow-up round trip.
-        $state = $this->exam->state($participation, $settings);
+        /*
+         * The tail of the answer is the same state the client would have got by
+         * asking, so a submission needs no follow-up round trip.
+         *
+         * It is also the only part of this response that can fail, and by the
+         * time it runs the answer is already committed. Letting it throw was
+         * the worst answer available: the contestant was told their answer
+         * failed when it had in fact been recorded, and a contestant told that
+         * submits again.
+         *
+         * So a failure here costs the convenience, never the answer. The client
+         * receives the outcome with no next question and asks for the current
+         * state, which is exactly what it does after any network failure.
+         */
+        try {
+            $next = $this->exam->state($participation, $settings)['question'];
+        } catch (Throwable $e) {
+            Log::warning('Madad: an answer was recorded but the next question could not be prepared', [
+                'competition_user_id' => $participation->id,
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
 
-        return response()->json($outcome + [
-            'next_question' => $state['question'],
-        ]);
+            $next = null;
+        }
+
+        return response()->json($outcome + ['next_question' => $next]);
     }
 
     public function result(Request $request): JsonResponse
