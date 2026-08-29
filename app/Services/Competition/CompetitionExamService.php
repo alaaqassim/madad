@@ -187,18 +187,22 @@ class CompetitionExamService
                 ->firstOrFail();
 
             $this->reconcile($locked, $settings);
-            $this->skipVanishedQuestions($locked, $settings);
+
+            // Resolves the live question and steps over any that has vanished,
+            // in the same read the payload needed anyway.
+            $question = $this->liveQuestion($locked, $settings);
+
             $locked->save();
 
             $participation->setRawAttributes($locked->getAttributes(), true);
 
-            if ($locked->isCompleted()) {
+            if ($locked->isCompleted() || $question === null) {
                 return $this->envelope($locked, null);
             }
 
             return $this->envelope(
                 $locked,
-                $this->payloadFor($locked, $settings, (int) $locked->current_question),
+                $this->payloadFor($locked, $settings, (int) $locked->current_question, $question),
             );
         });
     }
@@ -254,10 +258,14 @@ class CompetitionExamService
 
             $this->reconcile($locked, $settings);
 
-            // Before the expected id is read, so a contestant standing on a
-            // question that no longer exists is moved past it here rather than
-            // meeting a 404 from findOrFail() below.
-            $this->skipVanishedQuestions($locked, $settings);
+            /*
+             * Resolved before the expected id is read, so a contestant standing
+             * on a question that no longer exists is stepped past it here
+             * rather than meeting a 404 further down. On the ordinary path this
+             * is the same single read the correctness check needs anyway.
+             */
+            $question = $this->liveQuestion($locked, $settings);
+
             $locked->save();
 
             $participation->setRawAttributes($locked->getAttributes(), true);
@@ -305,7 +313,10 @@ class CompetitionExamService
                 return ['refuse' => 'question_expired'];
             }
 
-            $question = CompetitionQuestion::query()->findOrFail($expectedId);
+            if ($question === null) {
+                // The paper ran out while the question was being resolved.
+                return ['completed' => true];
+            }
 
             $this->advance($locked, $settings, $option, $option === $question->correct_option);
             $participation->setRawAttributes($locked->getAttributes(), true);
@@ -656,7 +667,7 @@ class CompetitionExamService
      * late must not extend the question that follows it.
      */
     /**
-     * Step over any position whose question is no longer in the bank.
+     * The question awaiting an answer, stepping over any that has vanished.
      *
      * A paper names question ids, and a question can be deleted after the paper
      * was dealt. Preflight calls that a blocker and it should never reach a
@@ -672,7 +683,7 @@ class CompetitionExamService
      *
      * Bounded by the paper length so a bank emptied entirely cannot spin.
      */
-    private function skipVanishedQuestions(CompetitionUser $participation, CompetitionSettings $settings): void
+    private function liveQuestion(CompetitionUser $participation, CompetitionSettings $settings): ?CompetitionQuestion
     {
         $count = $settings->questionCount();
 
@@ -680,13 +691,21 @@ class CompetitionExamService
             $index = (int) $participation->current_question;
 
             if ($index >= $count) {
-                return;
+                return null;
             }
 
             $questionId = $participation->questionIdAt($index);
 
-            if ($questionId !== null && CompetitionQuestion::query()->whereKey($questionId)->exists()) {
-                return;
+            // The load IS the check. An earlier version asked `exists()` first
+            // and then loaded, which cost an extra query on every answer and
+            // every read - a hundred and fifty per contestant - to look for
+            // something that essentially never happens.
+            $question = $questionId === null
+                ? null
+                : CompetitionQuestion::query()->find($questionId);
+
+            if ($question !== null) {
+                return $question;
             }
 
             Log::warning('Madad: a question on a live paper is missing from the bank', [
@@ -707,9 +726,11 @@ class CompetitionExamService
             if ($index + 1 >= $count) {
                 $this->finalize($participation, $settings);
 
-                return;
+                return null;
             }
         }
+
+        return null;
     }
 
     private function expireCurrent(CompetitionUser $participation, CompetitionSettings $settings): void
@@ -873,15 +894,21 @@ class CompetitionExamService
      *
      * @return array<string, mixed>
      */
-    private function payloadFor(CompetitionUser $participation, CompetitionSettings $settings, int $index): array
-    {
-        $questionId = $participation->questionIdAt($index);
+    private function payloadFor(
+        CompetitionUser $participation,
+        CompetitionSettings $settings,
+        int $index,
+        ?CompetitionQuestion $question = null,
+    ): array {
+        // Callers that have already resolved the question - which is all of them
+        // on the live path - hand it in rather than making the same read twice.
+        $question ??= ($id = $participation->questionIdAt($index)) === null
+            ? null
+            : CompetitionQuestion::query()->find($id);
 
-        if ($questionId === null) {
+        if ($question === null) {
             throw ExamException::noCurrentQuestion();
         }
-
-        $question = CompetitionQuestion::query()->findOrFail($questionId);
 
         $expiresAt = $this->deadlineFor($participation, $settings);
         $now = now();
