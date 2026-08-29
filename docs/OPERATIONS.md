@@ -571,6 +571,7 @@ Not deployed here. These are configuration changes, not code changes.
 | `MAIL_*` / gateway keys | vendor values | See §6 |
 | `DB_*` | the production database | Preflight verifies identity and isolation |
 | `APP_TIMEZONE` | `Asia/Baghdad` | Already set. MariaDB DATETIME carries no zone, so this IS the meaning of every stored time. **Do not change it once real data exists** — it reinterprets every stored date. |
+| `DB_TIMEZONE` | leave unset | Derived from `APP_TIMEZONE` and pinned on every connection. MariaDB defaults to `time_zone=SYSTEM`, which on a Linux server usually means UTC while the application means Baghdad — and the results views compare `effective_end_at` against `NOW(3)` read from the database. Preflight blocks if the two clocks disagree. |
 
 `session.http_only` is already `true` and must stay so.
 

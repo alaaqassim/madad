@@ -102,9 +102,48 @@ class PreflightService
             "{$zone} - the server reads ".now()->toDateTimeString().' (competition times mean this zone)',
         );
 
+        $checks[] = $this->databaseClockCheck();
+
         $checks[] = $this->pendingMigrationCheck();
 
         return $checks;
+    }
+
+    /**
+     * The application's clock and the database's, side by side.
+     *
+     * The results views are SQL: they decide who has finished by comparing
+     * `effective_end_at`, written by PHP, against NOW(3), read from the
+     * database. MariaDB defaults to time_zone=SYSTEM - the clock of whatever
+     * machine it runs on - which on a Linux server usually means UTC while the
+     * application means Baghdad. Three hours between them silently drops every
+     * contestant whose time ran out in the last three hours.
+     *
+     * Nothing else in the system would say a word about it, which is why it is
+     * checked here, on the machine that will actually run the competition.
+     */
+    private function databaseClockCheck(): PreflightCheck
+    {
+        try {
+            $database = Carbon::parse(DB::selectOne('SELECT NOW(3) AS now')->now);
+        } catch (Throwable $e) {
+            return PreflightCheck::fail('Environment', 'database clock', 'could not be read: '.$e->getMessage());
+        }
+
+        $drift = abs($database->diffInSeconds(now()));
+
+        return $drift < 5
+            ? PreflightCheck::pass(
+                'Environment',
+                'database clock',
+                'agrees with the application - both read '.$database->toDateTimeString(),
+            )
+            : PreflightCheck::fail(
+                'Environment',
+                'database clock',
+                "the database reads {$database->toDateTimeString()} and the application reads ".now()->toDateTimeString()
+                ." - {$drift} seconds apart. Results would lose contestants whose time ran out inside that gap; set DB_TIMEZONE.",
+            );
     }
 
     private function pendingMigrationCheck(): PreflightCheck

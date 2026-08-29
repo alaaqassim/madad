@@ -3,6 +3,38 @@
 use Illuminate\Support\Str;
 use Pdo\Mysql;
 
+/*
+|--------------------------------------------------------------------------
+| The connection's clock
+|--------------------------------------------------------------------------
+|
+| MariaDB defaults to time_zone=SYSTEM, which is the clock of whatever machine
+| the database happens to run on. On a developer's laptop that is usually the
+| same zone as the application; on a Linux server, and in CI, it is usually
+| UTC. Nothing warns about the difference.
+|
+| It matters because the results views are SQL: they decide who has finished
+| by comparing `effective_end_at`, written by PHP, against NOW(3), read from
+| the database. Three hours between those two clocks silently drops every
+| contestant whose time ran out in the last three hours - the exact failure
+| `effective_end_at` was added to prevent.
+|
+| So the session zone is pinned to the application's, and both connections
+| below use it. A numeric offset rather than a named zone because named zones
+| need the MySQL timezone tables loaded, which cannot be assumed on a host we
+| do not control.
+|
+| The offset is resolved once, at boot. Asia/Baghdad has had no daylight
+| saving since 2015, so it is constant - but a zone that does observe it would
+| need the timezone tables and a named zone here instead.
+*/
+$appTimezone = (string) env('APP_TIMEZONE', 'Asia/Baghdad');
+
+$connectionTimezone = (string) env(
+    'DB_TIMEZONE',
+    (new DateTimeImmutable('now', new DateTimeZone($appTimezone)))->format('P'),
+);
+
 return [
 
     /*
@@ -55,6 +87,7 @@ return [
             'unix_socket' => env('DB_SOCKET', ''),
             'charset' => env('DB_CHARSET', 'utf8mb4'),
             'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
+            'timezone' => $connectionTimezone,
             'prefix' => '',
             'prefix_indexes' => true,
             'strict' => true,
@@ -99,6 +132,7 @@ return [
             'unix_socket' => env('DB_SOCKET', ''),
             'charset' => env('DB_CHARSET', 'utf8mb4'),
             'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
+            'timezone' => $connectionTimezone,
             'prefix' => '',
             'prefix_indexes' => true,
             'strict' => true,

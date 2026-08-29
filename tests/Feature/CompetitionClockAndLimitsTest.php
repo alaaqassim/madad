@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\CompetitionSettings;
 use App\Services\Competition\PreflightService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Tests\Support\MadadFixtures;
@@ -83,6 +84,34 @@ class CompetitionClockAndLimitsTest extends TestCase
                 "'{$name}' prints an hour without saying which zone it is in",
             );
         }
+    }
+
+    public function test_the_database_clock_agrees_with_the_application_clock(): void
+    {
+        /*
+         * The results views are SQL. They decide who has finished by comparing
+         * `effective_end_at`, written by PHP, against NOW(3), read from the
+         * database - so the two clocks must be the same clock.
+         *
+         * MariaDB defaults to time_zone=SYSTEM, the clock of whatever machine
+         * it runs on. A laptop usually shares the application's zone; a Linux
+         * server and CI are usually UTC. Three hours between them drops every
+         * contestant whose time ran out in the last three hours, silently, and
+         * that is precisely the failure `effective_end_at` exists to prevent.
+         *
+         * This is asserted rather than the session zone setting, because what
+         * matters is that the clocks agree, not how they were made to.
+         */
+        $database = DB::selectOne('SELECT NOW(3) AS now')->now;
+
+        $drift = abs(Carbon::parse($database)->diffInSeconds(now()));
+
+        $this->assertLessThan(
+            5,
+            $drift,
+            "the database clock reads {$database} and the application reads ".now()->toDateTimeString()
+            ." - {$drift} seconds apart. Set DB_TIMEZONE, or the results views will lose finished contestants.",
+        );
     }
 
     public function test_a_stored_timestamp_reads_back_as_the_hour_it_was_written(): void
