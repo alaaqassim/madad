@@ -65,7 +65,28 @@ Route::prefix('api')->name('api.')->group(function (): void {
         Route::post('logout', [SessionController::class, 'destroy'])->name('logout');
 
         Route::prefix('exam')->name('exam.')->group(function (): void {
-            Route::post('start', [ExamController::class, 'start'])->name('start');
+            /*
+             * Not because Begin is dangerous. Because a perimeter with a gap in
+             * it is not a perimeter.
+             *
+             * Everything here is keyed by the authenticated user, so anybody
+             * hammering these locks their own row and blocks nobody else - and
+             * the client disables the button while the request is in flight, so
+             * there is no accidental loop either. On its own this endpoint
+             * would not need a number.
+             *
+             * But `answer` and `current` are capped, and PHP workers and
+             * database connections are shared. Anyone wanting to spend those
+             * would simply use whichever endpoint was left open, which would
+             * make capping the other two pointless. So every authenticated
+             * endpoint that opens a transaction carries a limit.
+             *
+             * Thirty is a thousand times any honest use: Begin is pressed once
+             * in an exam.
+             */
+            Route::post('start', [ExamController::class, 'start'])
+                ->middleware('throttle:30,1')
+                ->name('start');
             /*
              * Reading is not free here: every call opens a transaction and
              * takes a row lock to reconcile elapsed time. An honest contestant
@@ -80,7 +101,15 @@ Route::prefix('api')->name('api.')->group(function (): void {
             Route::post('answer', [ExamController::class, 'submit'])
                 ->middleware('throttle:120,1')
                 ->name('answer');
-            Route::get('result', [ExamController::class, 'result'])->name('result');
+            /*
+             * Reading a result settles the reader first, so this opens a
+             * transaction like the rest. Sixty rather than thirty because it is
+             * the one screen a contestant may sit on and refresh after the
+             * exam, and being refused there would be a poor last impression.
+             */
+            Route::get('result', [ExamController::class, 'result'])
+                ->middleware('throttle:60,1')
+                ->name('result');
         });
     });
 });

@@ -110,10 +110,34 @@ class CompetitionClockAndLimitsTest extends TestCase
     {
         return [
             'the public status page' => ['api.competition.status', 120],
+            'beginning the exam' => ['api.exam.start', 30],
             'reading the current question' => ['api.exam.current', 60],
             'submitting an answer' => ['api.exam.answer', 120],
+            'reading the result' => ['api.exam.result', 60],
             'signing in' => ['api.login', 300],
         ];
+    }
+
+    public function test_no_endpoint_that_opens_a_transaction_is_left_open(): void
+    {
+        /*
+         * The reason the numbers above exist at all.
+         *
+         * Each of these locks a row, and PHP workers and database connections
+         * are shared. One endpoint left uncapped is the one anybody spending
+         * those would use, which would make capping the others pointless. This
+         * fails if a route is ever added here without a limit.
+         */
+        $costly = ['api.exam.start', 'api.exam.current', 'api.exam.answer', 'api.exam.result'];
+
+        foreach ($costly as $name) {
+            $middleware = Route::getRoutes()->getByName($name)->gatherMiddleware();
+
+            $this->assertTrue(
+                collect($middleware)->contains(fn ($m) => is_string($m) && str_starts_with($m, 'throttle:')),
+                "{$name} opens a transaction and has no limit - the gap makes the other limits pointless",
+            );
+        }
     }
 
     /**
