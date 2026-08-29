@@ -419,24 +419,52 @@ that table; it neither knows nor cares how they got there.
 | `App\Services\Competition\CredentialGateway` (interface) | Done. `send(string $email, string $name, string $plaintextPassword): GatewayResult` |
 | `GatewayResult` | Done. `delivered()` / `failed(string $error)`. Never carries the credential. |
 | `LogCredentialGateway` | Done. The development implementation. Records that a dispatch happened, deliberately **not** what it contained. |
+| `MailCredentialGateway` | Done. Sends the real Arabic RTL message. Bound automatically when `MAIL_MAILER` is not `log`/`array`. |
+| `App\Mail\ContestantCredentials` + its Blade view | Done. Carries the credentials, the portal link, the opening time and the rules a contestant would otherwise learn by losing a question. |
 | `CredentialDeliveryService` | Done. Provisions, dispatches, records `email_status`, `email_attempts`, `credentials_sent_at`, `email_last_error`. |
 | Failure and retry handling | Done and tested, including re-issue-not-replay. |
 
 ### What remains external
 
-**No vendor gateway credentials or configuration have been supplied, so no
-production email delivery exists and none is claimed.** `MAIL_MAILER=log` is the
-current setting.
+**Only the provider's credentials.** The delivery path is complete and tested:
+`MailCredentialGateway` sends a real Arabic RTL message through Laravel's mail
+layer, and which gateway is bound follows `mail.default`:
+
+```
+MAIL_MAILER=log     → LogCredentialGateway    (records a dispatch, sends nothing)
+MAIL_MAILER=array   → LogCredentialGateway    (tests)
+anything else       → MailCredentialGateway   (really sends)
+```
+
+So attaching a provider is **one line in `.env`** and no code change at all. The
+default falls toward the log gateway deliberately: the other way round, a
+missing or misspelt `MAIL_MAILER` would send nothing while reporting success,
+and nobody would find out until competition day.
+
+The current setting is `MAIL_MAILER=log`, so **no mail is being sent** and none
+is claimed.
+
+### The password never rests anywhere
+
+Generated, sent, forgotten. It is not stored, not logged, and not queued — the
+mailable is sent synchronously rather than queued, because queueing serialises
+the plaintext into the `jobs` table. That is why a retry re-issues rather than
+resends: nothing can replay a password nobody kept.
 
 ### The exact seam
 
-One binding, in `app/Providers/AppServiceProvider.php`:
+One binding, in `app/Providers/AppServiceProvider.php`, and it follows the
+mailer rather than being set by hand:
 
 ```php
-$this->app->bind(CredentialGateway::class, LogCredentialGateway::class);
+$this->app->bind(CredentialGateway::class, function (): CredentialGateway {
+    return in_array(config('mail.default'), ['log', 'array', null], true)
+        ? new LogCredentialGateway
+        : new MailCredentialGateway;
+});
 ```
 
-Attaching a real gateway is:
+Writing a DIFFERENT provider (an API client rather than SMTP) is:
 
 1. Add `app/Services/Competition/<Vendor>CredentialGateway.php` implementing
    `CredentialGateway`. Return `GatewayResult::delivered()` or
@@ -452,7 +480,80 @@ through it.
 
 ---
 
-## 7. Production settings still to be applied
+## 7. Backups — manual, and the one hour that matters
+
+There is no cron and no persistent process on the production server, so this is
+a written procedure rather than an automated one. It is short because the
+database is small: a full dump of the live data measured **372 ms** and **711
+KB**.
+
+### What is actually at risk
+
+| When | What is lost | Recoverable? |
+|---|---|---|
+| Before the competition | the roster and the question bank | **Yes** — reload the roster file, rerun `madad:import-questions` |
+| **During the hour** | **the answers of everyone who has begun** | **No. Ever.** |
+| After the export | nothing that matters | Yes — the CSV holds the results |
+
+Only the middle row is irreplaceable, and it is irreplaceable in a way worth
+saying plainly: you cannot ask a thousand contestants to sit it again, and even
+if you could, they have now seen the questions. The competition burns once.
+
+The likeliest cause is not a failed disk. It is one SQL statement — and this
+competition is operated from SQL:
+
+```sql
+UPDATE competition_users SET exam_status = 'completed';   -- WHERE forgotten
+```
+
+### Taking one
+
+```bash
+mysqldump -u root -p --single-transaction madad_prod > madad_2026-09-10_0930.sql
+```
+
+`--single-transaction` is not decoration. Without it, a dump taken while
+contestants are answering reads one table at one instant and another table at a
+different one, and produces a backup that is internally inconsistent while
+looking perfectly fine. With it the dump is a consistent snapshot and blocks
+nobody.
+
+Two rules that are easy to skip and cost everything:
+
+- **Do not leave it on the server's own disk.** A backup beside the thing it
+  protects does not protect against losing the disk. Copy it off.
+- **Name it with the time.** You will take several within one hour and will need
+  to know which is the newest before the last one.
+
+### Verifying one
+
+A backup nobody checked is a belief, not a backup. Open the file and confirm it
+is not empty and ends with:
+
+```
+-- Dump completed on 2026-09-10  9:30:00
+```
+
+### Restoring one
+
+```bash
+mysql -u root -p madad_prod < madad_2026-09-10_0930.sql
+```
+
+Know this command before you need it. The moment you need it is not the moment
+to look it up.
+
+### When
+
+| Moment | Why |
+|---|---|
+| Before opening the portal | The clean point to return to. The most important one. |
+| Every ~10 minutes while it runs | Caps the worst possible loss at ten minutes |
+| Immediately on closing | Then `madad:results`, which is itself a second copy of the outcome |
+
+---
+
+## 8. Production settings still to be applied
 
 Not deployed here. These are configuration changes, not code changes.
 
@@ -469,6 +570,7 @@ Not deployed here. These are configuration changes, not code changes.
 | `SESSION_DRIVER` | `database` | Already set; survives a restart mid-competition |
 | `MAIL_*` / gateway keys | vendor values | See §6 |
 | `DB_*` | the production database | Preflight verifies identity and isolation |
+| `APP_TIMEZONE` | `Asia/Baghdad` | Already set. MariaDB DATETIME carries no zone, so this IS the meaning of every stored time. **Do not change it once real data exists** — it reinterprets every stored date. |
 
 `session.http_only` is already `true` and must stay so.
 
@@ -478,7 +580,7 @@ server clock synchronised via NTP (the exam is timed from it), and
 
 ---
 
-## 8. Competition-day sequence
+## 9. Competition-day sequence
 
 ```bash
 # the night before
@@ -487,18 +589,37 @@ php artisan madad:provision                     # deliver credentials
 php artisan madad:provision --retry-failed      # chase the failures
 php artisan madad:preflight                     # confirm again
 
-# on the morning
+# on the morning — --strict, so anything unresolved stops you
+php artisan madad:preflight --strict
+mysqldump -u root -p --single-transaction madad_prod > madad_BEFORE.sql
 php artisan madad:status                        # read the state
 php artisan madad:status --set=open             # confirm when asked
 
 # while it runs (all read-only, safe at any moment)
 php artisan madad:status
 php artisan madad:preflight
+mysqldump -u root -p --single-transaction madad_prod > madad_HHMM.sql   # every ~10 min
 
 # when it ends
 php artisan madad:status --set=closed           # ENDS the competition AND settles everyone; confirm
+mysqldump -u root -p --single-transaction madad_prod > madad_AFTER.sql
 php artisan madad:settle --dry-run              # confirm nobody is left mid-exam
 php artisan madad:preflight                     # integrity of the final data
 php artisan madad:results --top=100 --export=madad-top100.csv
 php artisan madad:results --top=0   --export=madad-all-completed.csv
 ```
+
+Copy every dump off the server as you take it (§7). A backup on the disk it is
+protecting is not one.
+
+### If the portal is closed with SQL rather than the command
+
+Closing with `UPDATE competition_settings SET status = 'closed'` shuts the gate
+and settles nobody, so rows stay `in_progress`. **The results are correct
+regardless** — `madad_results` and `madad_top100` read `effective_end_at` and
+include anybody whose time is up, settled or not (§3c) — but the rows themselves
+will be out of date and preflight will say so. `php artisan madad:settle --all`
+makes them honest.
+
+Opening with SQL is safe with nothing to follow: nothing is cached, and the next
+request reads the new status.
