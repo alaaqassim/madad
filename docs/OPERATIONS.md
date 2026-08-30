@@ -145,6 +145,12 @@ silently closes.
 
 ## 3. `madad:provision` — accounts and credentials
 
+> ⚠️ **Check `BCRYPT_ROUNDS` before the first run.** A bcrypt hash carries the
+> cost it was made with, so lowering the setting afterwards changes nothing for
+> accounts that already exist — and raising it does not protect them either.
+> Cost 12 verifies four times slower than cost 10, and login is the only
+> CPU-bound step in the system. See §8.
+
 ```bash
 php artisan madad:provision                    # deliver to pending rows
 php artisan madad:provision --dry-run          # report only, change nothing
@@ -572,6 +578,7 @@ Not deployed here. These are configuration changes, not code changes.
 | `DB_*` | the production database | Preflight verifies identity and isolation |
 | `APP_TIMEZONE` | `Asia/Baghdad` | Already set. MariaDB DATETIME carries no zone, so this IS the meaning of every stored time. **Do not change it once real data exists** — it reinterprets every stored date. |
 | `DB_TIMEZONE` | leave unset | Derived from `APP_TIMEZONE` and pinned on every connection. MariaDB defaults to `time_zone=SYSTEM`, which on a Linux server usually means UTC while the application means Baghdad — and the results views compare `effective_end_at` against `NOW(3)` read from the database. Preflight blocks if the two clocks disagree. |
+| `BCRYPT_ROUNDS` | `10` | Already set. Cost 12 is **four times slower** to verify (measured: 374 ms vs 92 ms on the development laptop; the ratio is stable, the absolute number is not). Login is the only CPU-bound thing in the system - the database part of it is 0.23 ms - and a thousand contestants signing in at the hour would queue on it. **A bcrypt hash carries its own cost, so this only affects hashes made after it is set: change it BEFORE `madad:provision`, never after.** |
 
 `session.http_only` is already `true` and must stay so.
 
