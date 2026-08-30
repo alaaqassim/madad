@@ -83,9 +83,7 @@ onMounted(async () => {
             :reason="exam.fatalReason.value"
             :competition-name="exam.competition.name"
             :busy="exam.busy.boot"
-            :authenticated="exam.authenticated.value"
             @refresh="exam.boot()"
-            @logout="exam.logout()"
         />
 
         <!-- 4. Ready: start or resume -->
@@ -101,7 +99,6 @@ onMounted(async () => {
             :error-reason="exam.error.value"
             @start="exam.start()"
             @retry="exam.start()"
-            @logout="exam.logout()"
         />
 
         <!-- 5. The exam itself -->
@@ -130,7 +127,6 @@ onMounted(async () => {
             :result="exam.result.value"
             :error-reason="exam.error.value"
             @retry="exam.boot()"
-            @logout="exam.logout()"
         />
     </MadadShell>
 </template>

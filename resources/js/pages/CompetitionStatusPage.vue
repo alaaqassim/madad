@@ -18,10 +18,10 @@ const props = defineProps({
     reason: { type: String, default: null },
     competitionName: { type: String, default: null },
     busy: { type: Boolean, default: false },
-    authenticated: { type: Boolean, default: false },
 });
 
-defineEmits(['refresh', 'logout']);
+// Signing out lives in the shell header, once, for every screen that offers it.
+defineEmits(['refresh']);
 
 const TERMINAL = ['competition_closed'];
 
@@ -106,10 +106,6 @@ const content = computed(() => {
                     @click="$emit('refresh')"
                 >
                     {{ isTransport ? copy.actions.retry : copy.status.refresh }}
-                </MadadButton>
-
-                <MadadButton v-if="authenticated" variant="link" @click="$emit('logout')">
-                    {{ copy.status.signOut }}
                 </MadadButton>
             </div>
         </MadadCard>

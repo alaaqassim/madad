@@ -90,7 +90,6 @@ export const copy = {
         answeredLabel: 'الأسئلة المُجابة',
         answered: (answered, total) => `${answered} من ${total}`,
         completedAt: 'وقت الانتهاء',
-        signOut: 'تسجيل الخروج',
     },
 
     errors: {

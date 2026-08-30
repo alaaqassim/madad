@@ -1,7 +1,6 @@
 <script setup>
 import { computed } from 'vue';
 import MadadCard from '../components/madad/MadadCard.vue';
-import MadadButton from '../components/madad/MadadButton.vue';
 import MadadStatusMessage from '../components/madad/MadadStatusMessage.vue';
 import { copy, messageForReason } from '../i18n/messages';
 
@@ -20,7 +19,8 @@ const props = defineProps({
     errorReason: { type: String, default: null },
 });
 
-defineEmits(['logout', 'retry']);
+// Signing out lives in the shell header, once, for every screen that offers it.
+defineEmits(['retry']);
 
 const showScore = computed(
     () => Boolean(props.result?.show_result) && typeof props.result?.correct_answers === 'number',
@@ -79,10 +79,6 @@ const banner = computed(() => (props.errorReason ? messageForReason(props.errorR
             retryable
             @retry="$emit('retry')"
         />
-
-        <div class="done__footer">
-            <MadadButton variant="link" @click="$emit('logout')">{{ copy.completed.signOut }}</MadadButton>
-        </div>
     </div>
 </template>
 
@@ -154,10 +150,5 @@ const banner = computed(() => (props.errorReason ? messageForReason(props.errorR
 
 .done__banner {
     margin-block-start: var(--madad-space-5);
-}
-
-.done__footer {
-    margin-block-start: var(--madad-space-6);
-    text-align: center;
 }
 </style>

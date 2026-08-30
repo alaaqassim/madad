@@ -30,7 +30,8 @@ const props = defineProps({
     errorReason: { type: String, default: null },
 });
 
-defineEmits(['start', 'logout', 'retry']);
+// Signing out lives in the shell header, once, for every screen that offers it.
+defineEmits(['start', 'retry']);
 
 const resuming = computed(() => props.examStatus === 'in_progress');
 
@@ -92,9 +93,6 @@ const retryable = computed(() => ['network_error', 'server_error', 'unknown'].in
             </ul>
         </MadadCard>
 
-        <div class="intro__footer">
-            <MadadButton variant="link" @click="$emit('logout')">{{ copy.status.signOut }}</MadadButton>
-        </div>
     </div>
 </template>
 
@@ -164,11 +162,6 @@ const retryable = computed(() => ['network_error', 'server_error', 'unknown'].in
     block-size: 6px;
     border-radius: var(--madad-radius-pill);
     background: var(--madad-gold-500);
-}
-
-.intro__footer {
-    margin-block-start: var(--madad-space-6);
-    text-align: center;
 }
 
 @media (min-width: 30rem) {
